@@ -1,0 +1,578 @@
+---
+title: "RQ3_consequences_revised_18feb2019"
+author: "Karen M. Kapheim"
+date: "February 18, 2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include = TRUE,echo = FALSE,message = FALSE,warning = FALSE,error=FALSE)
+knitr::opts_chunk$set(tidy = FALSE, fig.width = 8, fig.height = 8, fig.pos = "center",
+               cache = FALSE)
+```
+
+## Load Packages
+
+Load the necessary packages.
+
+```{r library, include = FALSE}
+library(knitr)
+library(ppcor)
+library(knitcitations)
+library(limma)
+library(plyr)
+library(edgeR)
+library(tidyr)
+library(GOstats)
+library(GSEABase)
+library(foreign)
+library(ggplot2)
+library(MASS)
+library(Hmisc)
+library(reshape2)
+library(FSA)
+library(doBy)
+library(RColorBrewer)
+library(Glimma)
+library(glmulti)
+library(cplm)
+library(rgl)
+library(broom)
+library(dotwhisker)
+library(dplyr)
+library(plot3D)
+```
+
+### Get data
+
+```{r data}
+load(file = "halictid_genome_data.RDA")
+#load("halictid_genome_analysis_RQ3.RData")
+```
+
+
+## RQ3. Consequences of plasticity
+
+### To what degree does plasticity predict selection? 
+
+
+#### Prep data
+
+```{r MK-class}
+mgen.gene.data$MKclass <- ifelse(mgen.gene.data$MKp < 0.05 & mgen.gene.data$BSnIPRE.class == "pos", "positive",
+                                 ifelse(mgen.gene.data$MKp < 0.05 & mgen.gene.data$BSnIPRE.class == "neg", "negative",
+                                        ifelse(mgen.gene.data$BSnIPRE.class == "neut" & mgen.gene.data$NI < 1.05 & mgen.gene.data$NI > 0.95,"neutral",NA)))
+mgen.gene.data$MKclass <- factor(mgen.gene.data$MKclass)
+table(mgen.gene.data$MKclass)
+ggplot(mgen.gene.data, aes(x = MKclass, y = NI)) +
+  geom_boxplot() 
+```
+
+Visualize relationships
+
+```{r scatters}
+ggplot(mgen.gene.data,aes(x = pi.soc.abd.norm, y = NI)) + geom_point()
+ggplot(mgen.gene.data,aes(x = pi.soc.br.norm, y = NI)) + geom_point()
+ggplot(mgen.gene.data,aes(x = pi.sex.norm, y = NI)) + geom_point()
+ggplot(mgen.gene.data,aes(x = pi.stage.norm, y = NI)) + geom_point()
+ggplot(mgen.gene.data,aes(x = AveExpr, y = NI)) + geom_point()
+ggplot(mgen.gene.data,aes(x = tau.mgen.all, y = NI)) + geom_point()
+```
+
+#### Need to do the following: 
+
+1. Orthogroup age should be a numeric variable, not a factor
+2. Scale/standardize the predictor variables so that the coefficients are comparable
+3. Address multicollinearity among predictor variables
+
+###### Change orthogroup age to a numeric variable
+
+```{r rev-1}
+class(mgen.gene.data$nAge)
+mgen.gene.data$nAge <- as.numeric(mgen.gene.data$nAge)
+class(mgen.gene.data$nAge)
+```
+
+###### Check for multicollinearity
+From Zuur et al. 2010 Methods in Ecology and Evolution (https://doi.org/10.1111/j.2041-210X.2009.00001.x)
+
+> One strategy for addressing this problem is to sequentially drop the covariate with the highest VIF, recalculate the VIFs and repeat this process until all VIFs are smaller than a pre‐selected threshold. Montgomery & Peck (1992) used a value of 10, but a more stringent approach is to use values as low as 3 as we did here... The easiest way to solve collinearity is by dropping collinear covariates. The choice of which covariates to drop can be based on the VIFs, or perhaps better, on common sense or biological knowledge...Whenever two covariates X and Z are collinear, and Z is used in the statistical analysis, then the biological discussion in which the effect of Z is explained should include mention of the collinearity, and recognize that it might well be X that is driving the system (cf. Gjerdrum et al. 2008). For a discussion of collinearity in combination with measurement errors on the covariates, see Carroll et al. (2006).
+
+Build the function from:
+
+http://highstat.com/Books/BGS/GAMM/RCodeP2/HighstatLibV6.R
+
+> Library files for courses provided by: Highland Statistics Ltd.
+To cite these functions, use:
+Mixed effects models and extensions in ecology with R. (2009).
+Zuur, AF, Ieno, EN, Walker, N, Saveliev, AA, and Smith, GM. Springer.
+
+
+```{r rev-3a}
+#VIF FUNCTION.
+#To use:  corvif(YourDataFile)
+corvif <- function(dataz) {
+  dataz <- as.data.frame(dataz)
+  #correlation part
+  #cat("Correlations of the variables\n\n")
+  #tmp_cor <- cor(dataz,use="complete.obs")
+  #print(tmp_cor)
+  
+  #vif part
+  form    <- formula(paste("fooy ~ ",paste(strsplit(names(dataz)," "),collapse=" + ")))
+  dataz   <- data.frame(fooy=1,dataz)
+  lm_mod  <- lm(form,dataz)
+  
+  cat("\n\nVariance inflation factors\n\n")
+  print(myvif(lm_mod))
+}
+
+
+#Support function for corvif. Will not be called by the user
+myvif <- function(mod) {
+  v <- vcov(mod)
+  assign <- attributes(model.matrix(mod))$assign
+  if (names(coefficients(mod)[1]) == "(Intercept)") {
+    v <- v[-1, -1]
+    assign <- assign[-1]
+  } else warning("No intercept: vifs may not be sensible.")
+  terms <- labels(terms(mod))
+  n.terms <- length(terms)
+  if (n.terms < 2) stop("The model contains fewer than 2 terms")
+  if (length(assign) > dim(v)[1] ) {
+    diag(tmp_cor)<-0
+    if (any(tmp_cor==1.0)){
+      return("Sample size is too small, 100% collinearity is present")
+    } else {
+      return("Sample size is too small")
+    }
+  }
+  R <- cov2cor(v)
+  detR <- det(R)
+  result <- matrix(0, n.terms, 3)
+  rownames(result) <- terms
+  colnames(result) <- c("GVIF", "Df", "GVIF^(1/2Df)")
+  for (term in 1:n.terms) {
+    subs <- which(assign == term)
+    result[term, 1] <- det(as.matrix(R[subs, subs])) * det(as.matrix(R[-subs, -subs])) / detR
+    result[term, 2] <- length(subs)
+  }
+  if (all(result[, 2] == 1)) {
+    result <- data.frame(GVIF=result[, 1])
+  } else {
+    result[, 3] <- result[, 1]^(1/(2 * result[, 2]))
+  }
+  invisible(result)
+}
+#END VIF FUNCTIONS
+```
+
+Now run the function
+
+
+```{r rev-3b}
+mgen.gene.data.conseq <- mgen.gene.data[,c("gene","AveExpr","NI","tau.mgen.all","pi.stage.norm","pi.sex.norm","pi.soc.abd.norm","pi.soc.br.norm", "nAge")]
+mgen.gene.data.conseq <- mgen.gene.data.conseq[complete.cases(mgen.gene.data.conseq),]
+rownames(mgen.gene.data.conseq) <- mgen.gene.data.conseq$gene 
+mgen.gene.data.conseq <- mgen.gene.data.conseq[,c("AveExpr","NI","tau.mgen.all","pi.stage.norm","pi.sex.norm","pi.soc.abd.norm","pi.soc.br.norm", "nAge")]
+colnames(mgen.gene.data.conseq)
+vif.conseq.1 <- corvif(mgen.gene.data.conseq[,c(1,3:8)])
+vif.conseq.1
+```
+None of the variables have VIF > 3. Keeping all variables.
+
+###### Standardize  variables
+
+Include orthogroup age, since the numeric values are dummy variables?
+* Try it with including orthogroup age for now.
+
+```{r rev-2}
+mgen.gene.data.conseq.std <- scale(mgen.gene.data.conseq[,c(1,3:8)],center = T, scale = T)
+mgen.gene.data.conseq.std <- as.data.frame(mgen.gene.data.conseq.std)
+mgen.gene.data.conseq.std.comp <- cbind(mgen.gene.data.conseq$NI , mgen.gene.data.conseq.std)
+colnames(mgen.gene.data.conseq.std.comp)[1] <- "NI"
+```
+
+#### GLM: gaussian distribution and log-link function**
+
+```{r prep}
+
+#mgen.gene.data.conseq <- mgen.gene.data.conseq[complete.cases(mgen.gene.data.conseq[,c("NI","pi.soc.abd.norm")]),]
+hist(mgen.gene.data.conseq.std.comp$NI)
+summary(mgen.gene.data.conseq.std.comp$NI)
+sum(mgen.gene.data.conseq.std.comp$NI == 0 )/nrow(mgen.gene.data.conseq.std.comp)
+# 64% of the NI values are 0!
+dim(mgen.gene.data.conseq.std.comp)
+```
+Due to the large proportion of zeros, I am using compound poisson modeling. This accounts for the zeros, and then models the continuous portion of the data distribution.
+
+Do some model selection.
+```{r m-1}
+cpglm.NI.m0 <- cpglm(NI ~ 1, data = mgen.gene.data.conseq.std.comp)
+summary(cpglm.NI.m0)
+c(coef(cpglm.NI.m0),p = cpglm.NI.m0$p, phi = cpglm.NI.m0$phi, AIC = cpglm.NI.m0$aic)
+#
+cpglm.NI.m1 <- cpglm(NI ~ AveExpr + tau.mgen.all + nAge + pi.stage.norm +  I(pi.stage.norm^2) + pi.sex.norm +  I(pi.sex.norm^2) +  pi.soc.abd.norm +  I(pi.soc.abd.norm^2) + pi.soc.br.norm + I(pi.soc.br.norm^2), data = mgen.gene.data.conseq.std.comp)
+summary(cpglm.NI.m1)
+c(coef(cpglm.NI.m1),p = cpglm.NI.m1$p, phi = cpglm.NI.m1$phi, AIC = cpglm.NI.m1$aic)
+#
+cpglm.NI.m2 <- cpglm(NI ~ AveExpr + tau.mgen.all + nAge + pi.stage.norm  + pi.sex.norm  +  pi.soc.abd.norm +   pi.soc.br.norm , data = mgen.gene.data.conseq.std.comp)
+summary(cpglm.NI.m2)
+c(coef(cpglm.NI.m2),p = cpglm.NI.m2$p, phi = cpglm.NI.m2$phi, AIC = cpglm.NI.m2$aic)
+#
+cpglm.NI.m3 <- cpglm(NI ~ AveExpr +  nAge + pi.soc.abd.norm +  I(pi.soc.abd.norm^2) + pi.soc.br.norm + I(pi.soc.br.norm^2), data = mgen.gene.data.conseq.std.comp)
+summary(cpglm.NI.m3)
+c(coef(cpglm.NI.m3),p = cpglm.NI.m3$p, phi = cpglm.NI.m3$phi, AIC = cpglm.NI.m3$aic)
+#
+cpglm.NI.m4 <- cpglm(NI ~ AveExpr + tau.mgen.all + pi.stage.norm +  I(pi.stage.norm^2) + pi.sex.norm +  I(pi.sex.norm^2) +  pi.soc.abd.norm +  I(pi.soc.abd.norm^2) + pi.soc.br.norm + I(pi.soc.br.norm^2), data = mgen.gene.data.conseq.std.comp)
+summary(cpglm.NI.m4)
+c(coef(cpglm.NI.m4),p = cpglm.NI.m4$p, phi = cpglm.NI.m4$phi, AIC = cpglm.NI.m4$aic)
+```
+delta (AIC differences) within 0-2 has a substantial support; delta within 4-7 considerably less support and delta greater than 10 essentially no support
+
+
+
+#### Make plots
+
+2D plots
+
+
+With Age as color
+
+```{r 2dplots-3}
+mgen.gene.data.conseq$nAge <- as.factor(mgen.gene.data.conseq$nAge)
+cols.abd <- c("1" = "#ff8463", 
+               "2" = "#ff9163", 
+               "3" = "#ff9e63", 
+               "4" = "#ffa463",
+               "5" = "#ffab63", 
+               "6" = "#ffb163", 
+               "7" = "#ffb863",
+               "8" = "#ffc563", 
+               "9" = "#ffd263")
+ages <- c("Unique", 
+          "Apoidea", 
+          "Aculeata", 
+          "Hymenoptera", 
+          "Holometabola", 
+          "Insecta", 
+          "Arthropoda", 
+          "Metazoa", 
+          "Vertebrata")
+svg("conseq_soc_abd_orthoAge_2Dv2.svg")
+neutral <- data.frame(yintercept = 1, cutoff=factor(1))
+p.conseq.soc.abd.orthoAge <- ggplot(mgen.gene.data.conseq, 
+                                 aes(x = pi.soc.abd.norm, y = NI, fill = nAge)) +
+  geom_point(shape = 21, size = 4) +
+  geom_hline(aes(yintercept=yintercept, 
+             linetype=cutoff), 
+             data=neutral, 
+             show_guide = FALSE, 
+             colour = "#990000", 
+             linetype = "dashed", 
+             size = 1.5) + 
+  scale_fill_manual(values = cols.abd,
+                      labels = ages) +
+ scale_alpha(range = c(0, .8)) +
+  scale_y_continuous(breaks = seq(0,40,10)) +
+  scale_x_continuous(breaks = seq(0,3,0.5))  + 
+  labs(y = "Neutrality index (NI)", 
+       x = "Social plasticity index (abdomen)",
+       fill = "Orthogroup\nAge") + 
+  theme(legend.position = c(0.8,0.8), 
+        legend.direction = "vertical",
+        text = element_text(color = "black", size = 18),
+        axis.title = element_text(color = "black", size = 18),
+        axis.text.x = element_text(color = "black", size = 18),
+        axis.text.y = element_text(color = "black", size = 18),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(size = 0.5,linetype = "solid", colour = "black"))
+print(p.conseq.soc.abd.orthoAge)
+dev.off()
+p.conseq.soc.abd.orthoAge
+```
+
+```{r 2dplots-4}
+mgen.gene.data.conseq$nAge <- as.factor(mgen.gene.data.conseq$nAge)
+cols.br <- c("1" = "#32574d", 
+               "2" = "#3d655b", 
+               "3" = "#487468", 
+               "4" = "#4d7b6f",
+               "5" = "#528276", 
+               "6" = "#588a7d", 
+               "7" = "#5d9184",
+               "8" = "#68a091", 
+               "9" = "#73ae9f")
+ages <- c("Unique", 
+          "Apoidea", 
+          "Aculeata", 
+          "Hymenoptera", 
+          "Holometabola", 
+          "Insecta", 
+          "Arthropoda", 
+          "Metazoa", 
+          "Vertebrata")
+svg("conseq_soc_br_orthoAge_2Dv2.svg")
+neutral <- data.frame(yintercept = 1, cutoff=factor(1))
+p.conseq.soc.br.orthoAge <- ggplot(mgen.gene.data.conseq, 
+                                 aes(x = pi.soc.br.norm, y = NI, fill = nAge)) +
+  geom_point(shape = 21, size = 4) +
+  geom_hline(aes(yintercept=yintercept, 
+             linetype=cutoff), 
+             data=neutral, 
+             show_guide = FALSE, 
+             colour = "#990000", 
+             linetype = "dashed", 
+             size = 1.5) + 
+  scale_fill_manual(values = cols.br,
+                      labels = ages) +
+ scale_alpha(range = c(0, .8)) +
+  scale_y_continuous(breaks = seq(0,40,10)) +
+  scale_x_continuous(breaks = seq(0,3,0.5))  + 
+  labs(y = "Neutrality index (NI)", 
+       x = "Social plasticity index (brain)",
+       fill = "Orthogroup\nAge") + 
+  theme(legend.position = c(0.8,0.8), 
+        legend.direction = "vertical",
+        text = element_text(color = "black", size = 18),
+        axis.title = element_text(color = "black", size = 18),
+        axis.text.x = element_text(color = "black", size = 18),
+        axis.text.y = element_text(color = "black", size = 18),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(size = 0.5,linetype = "solid", colour = "black"))
+print(p.conseq.soc.br.orthoAge)
+dev.off()
+p.conseq.soc.br.orthoAge
+```
+
+```{r 2dplots-5}
+#svg("conseq_soc_br_orthoAge_2D.svg")
+#p.conseq.soc.br.orthoAge <- ggplot(mgen.gene.data.conseq, 
+#                                 aes(x = pi.soc.br.norm, y = NI, 
+#                                     fill = nAge)) +
+#  geom_point(shape = 21, size = 4) +
+#  geom_hline(aes(yintercept=yintercept, linetype=cutoff), data=neutral, show_guide = FALSE, colour = "#990000", linetype = #"longdash", size = 2) +
+#  scale_fill_brewer(palette = "Greens", labels = c("Unique", "Apoidea", "Aculeata", "Hymenoptera", "Holometabola", "Insecta", #"Arthropoda", "Metazoa", "Vertebrata")) + 
+#  scale_alpha(range = c(0, .8)) +
+#  scale_y_continuous(breaks = seq(0,50,10)) +
+#  scale_x_continuous(breaks = seq(0,2,0.5))  + 
+#  labs(y = "Neutrality index (NI)", 
+#       x = "Social plasticity index (brain)",
+#       fill = "Orthogroup\nAge") + 
+#  theme(legend.position = c(0.8,0.8), 
+#        legend.direction = "vertical",
+#        text = element_text(color = "black", size = 18),
+#        axis.title = element_text(color = "black", size = 18),
+#        axis.text.x = element_text(color = "black", size = 18),
+#        axis.text.y = element_text(color = "black", size = 18),
+#        legend.background = element_blank(),
+#        legend.key = element_blank(),
+#        panel.background = element_rect(fill = "white"),
+#        panel.border = element_blank(),
+#        panel.grid.major = element_blank(),
+#        panel.grid.minor = element_blank(),
+#        axis.line = element_line(size = 0.5,linetype = "solid", colour = "black"))
+#print(p.conseq.soc.br.orthoAge)
+#dev.off()
+#p.conseq.soc.br.orthoAge
+```
+
+
+```{r 2dplots-1, include = FALSE}
+#svg("conseq_soc_abd_2D.svg")
+#p.conseq.soc.abd <- ggplot(mgen.gene.data.conseq, 
+#                                 aes(x = pi.soc.abd.norm, y = NI, 
+#                                     fill = AveExpr)) +
+#  geom_point(shape = 21, size = 4) +
+#  scale_fill_gradient2(low = "thistle2", midpoint = 6, mid = "gray80", high = "seagreen") + 
+#  scale_alpha(range = c(0, 1)) +
+#  scale_y_continuous(breaks = seq(0,40,10)) +
+#  scale_x_continuous(breaks = seq(0,3,0.5))  + 
+#  labs(y = "Neutrality index (NI)", 
+#       x = "Social plasticity index (abdomen)",
+#       fill = "Average Expression (cpm)") + 
+#  theme(legend.position = "top", 
+#        legend.direction = "horizontal",
+#        text = element_text(color = "black", size = 18),
+#        axis.title = element_text(color = "black", size = 18),
+#        axis.text.x = element_text(color = "black", size = 18),
+#        axis.text.y = element_text(color = "black", size = 18),
+#        legend.background = element_blank(),
+#        panel.background = element_rect(fill = "white"),
+#        panel.border = element_blank(),
+#        panel.grid.major = element_blank(),
+#        panel.grid.minor = element_blank(),
+#        axis.line = element_line(size = 0.5,linetype = "solid", colour = "black"))
+#print(p.conseq.soc.abd)
+#dev.off()
+#p.conseq.soc.abd
+```
+
+
+```{r 2dplots-2, include = FALSE}
+#svg("conseq_soc_br_2D.svg")
+#p.conseq.soc.br <- ggplot(mgen.gene.data.conseq, 
+#                                 aes(x = pi.soc.br.norm, y = NI, 
+#                                     fill = AveExpr)) +
+#  geom_point(shape = 21, size = 4) +
+#  scale_fill_gradient2(low = "wheat1",  midpoint = 6, mid = "gray80", high = "salmon") + 
+#  scale_alpha(range = c(0, 1)) +
+#  scale_y_continuous(breaks = seq(0,40,10)) +
+#  scale_x_continuous(breaks = seq(0,2,0.5))  + 
+#  labs(y = "Neutrality index (NI)", 
+#       x = "Social plasticity index (brain)",
+#       fill = "Average Expression (cpm)") + 
+#  theme(legend.position = "top", 
+#        legend.direction = "horizontal",
+#        text = element_text(color = "black", size = 18),
+#        axis.title = element_text(color = "black", size = 18),
+#        axis.text.x = element_text(color = "black", size = 18),
+#        axis.text.y = element_text(color = "black", size = 18),
+#        legend.background = element_blank(),
+#        panel.background = element_rect(fill = "white"),
+#        panel.border = element_blank(),
+#        panel.grid.major = element_blank(),
+#        panel.grid.minor = element_blank(),
+#        axis.line = element_line(size = 0.5,linetype = "solid", colour = "black"))
+#print(p.conseq.soc.br)
+#dev.off()
+#p.conseq.soc.br
+```
+
+3D plots
+
+```{r plot-1, include = FALSE}
+#png(filename = "consequences1.png")
+#p.conseq.1 <- scatter3D(mgen.gene.data.conseq$pi.soc.br.norm, mgen.gene.data.conseq$pi.soc.abd.norm, #mgen.gene.data.conseq$NI, 
+#          clab = c("Average\nExpression\nLevel"), 
+#          colvar = mgen.gene.data.conseq$AveExpr,  
+#          bty = "b2", 
+#          col.grid = "black",
+#          pch = 21,
+#          theta = 20,
+#          phi = 21,
+#          col = "black",
+#          bg = ramp.col(c("#D9B44A","#BCBABE","#75B1A9")),
+#          xlab = "",
+#          ylab = "",
+#          zlab = "")
+#print(p.conseq.1)
+#dev.off()
+#pdf("consequences2.pdf")
+#p.conseq.2 <- scatter3D(mgen.gene.data.conseq$pi.soc.br.norm, mgen.gene.data.conseq$pi.soc.abd.norm, #mgen.gene.data.conseq$NI, 
+##          clab = c("Average\nExpression\nLevel"), 
+#          colvar = mgen.gene.data.conseq$AveExpr,  
+#          bty = "b2", 
+#          col.grid = "black",
+#          pch = 19,
+#          theta = 20,
+#          phi = 21,
+#          col = ramp.col(c("#D9B44A","#ACD0C0","#75B1A9")),
+#          xlab = "",
+#          ylab = "",
+#          zlab = "",
+#          colkey = list(side = 4, length = 0.75),
+#          ticktype = "detailed",
+#          type = "h")
+#print(p.conseq.2)
+#dev.off()
+#png(filename="consequences2.png")
+#p.conseq.2 <- scatter3D(mgen.gene.data.conseq$pi.soc.br.norm, mgen.gene.data.conseq$pi.soc.abd.norm, #mgen.gene.data.conseq$NI, 
+#          clab = c("Average\nExpression\nLevel"), 
+#          colvar = mgen.gene.data.conseq$AveExpr,  
+##          bty = "b2", 
+##          col.grid = "black",
+#          pch = 19,
+#          theta = 20,
+#          phi = 21,
+#          col = ramp.col(c("#D9B44A","#ACD0C0","#75B1A9")),
+#          xlab = "",
+#          ylab = "",
+#          zlab = "",
+#          colkey = list(side = 4, length = 0.75),
+#          ticktype = "detailed",
+#          type = "h")
+#print(p.conseq.2)
+#dev.off()
+```
+
+Modeling pi. (Did not include.)
+
+```{r m-2, include= FALSE}
+#cpglm.pi.m0 <- cpglm(mgen_pi_mean ~ 1, data = mgen.gene.data)
+#summary(cpglm.pi.m0)
+#c(coef(cpglm.NI.m0),p = cpglm.NI.m0$p, phi = cpglm.NI.m0$phi, AIC = cpglm.NI.m0$aic)
+#
+#cpglm.pi.m1 <- cpglm(mgen_pi_mean ~ AveExpr + tau.mgen.all + pi.stage.norm +  I(pi.stage.norm^2) + pi.sex.norm +  I(pi.sex.norm^2) +  pi.soc.abd.norm +  I(pi.soc.abd.norm^2) + pi.soc.br.norm + I(pi.soc.br.norm^2), data = mgen.gene.data)
+#summary(cpglm.pi.m1)
+#c(coef(cpglm.NI.m1),p = cpglm.NI.m1$p, phi = cpglm.NI.m1$phi, AIC = cpglm.NI.m1$aic)
+#
+#cpglm.NI.m2 <- cpglm(NI ~ AveExpr + tau.mgen.all + pi.stage.norm  + pi.sex.norm  +  pi.soc.abd.norm +   pi.soc.br.norm , #data = mgen.gene.data.conseq)
+#summary(cpglm.NI.m2)
+#c(coef(cpglm.NI.m2),p = cpglm.NI.m2$p, phi = cpglm.NI.m2$phi, AIC = cpglm.NI.m2$aic)
+##
+#cpglm.NI.m3 <- cpglm(NI ~ AveExpr +  pi.soc.abd.norm +  I(pi.soc.abd.norm^2) + pi.soc.br.norm + I(pi.soc.br.norm^2), data = #mgen.gene.data.conseq)
+#summary(cpglm.NI.m3)
+#c(coef(cpglm.NI.m3),p = cpglm.NI.m3$p, phi = cpglm.NI.m3$phi, AIC = cpglm.NI.m3$aic)
+```
+
+
+### How does caste-biased expression influence selection?
+
+Compare NI between Q-biased and W-biased genes, as well as other types of conditionally-expressed genes.
+
+```{r ex-1}
+# rate of adaptive substitution
+mgen.gene.data$alpha <- 1-mgen.gene.data$NI
+# abdomen
+lfc.social.abd$caste.bias.abd <- ifelse(lfc.social.abd$soc.abd.qVw > 1.2 & lfc.social.abd$adj.P.Val < 0.05, "Q",
+                                    ifelse(lfc.social.abd$soc.abd.qVw < -1.2 & lfc.social.abd$adj.P.Val < 0.05,"W","no bias"))
+table(lfc.social.abd$caste.bias.abd)
+lfc.social.abd <-  cbind(rownames(lfc.social.abd), data.frame(lfc.social.abd, row.names = NULL))
+colnames(lfc.social.abd)[1] <- "gene"
+mgen.gene.data <- plyr::join(mgen.gene.data,lfc.social.abd[,c("gene","caste.bias.abd")], by="gene")
+mgen.gene.data$caste.bias.abd <- factor(mgen.gene.data$caste.bias.abd)
+ddply(mgen.gene.data, ~caste.bias.abd, summarise, mean = mean(alpha, na.rm=T), sd = sd(alpha, na.rm = T), se = sd(alpha, na.rm=T)/sqrt(length(alpha)) )
+m.abd <- aov(alpha ~ caste.bias.abd, data = mgen.gene.data)
+summary(m.abd)
+TukeyHSD(m.abd)
+# brain
+lfc.social.br$caste.bias.br <- ifelse(lfc.social.br$soc.br.qVw > 1.2 & lfc.social.br$adj.P.Val < 0.05, "Q",
+                                    ifelse(lfc.social.br$soc.br.qVw < -1.2 & lfc.social.br$adj.P.Val < 0.05,"W","no bias"))
+table(lfc.social.br$caste.bias.br)
+lfc.social.br <-  cbind(rownames(lfc.social.br), data.frame(lfc.social.br, row.names = NULL))
+colnames(lfc.social.br)[1] <- "gene"
+mgen.gene.data <- plyr::join(mgen.gene.data,lfc.social.br[,c("gene","caste.bias.br")], by="gene")
+mgen.gene.data$caste.bias.br <- factor(mgen.gene.data$caste.bias.br)
+ddply(mgen.gene.data, ~caste.bias.br, summarise, mean = mean(alpha, na.rm=T), sd = sd(alpha, na.rm = T), se = sd(alpha, na.rm=T)/sqrt(length(alpha)) )
+m.br <- aov(alpha ~ caste.bias.br, data = mgen.gene.data)
+summary(m.br)
+TukeyHSD(m.br)
+```
+
+
+## Save project
+
+ 
+```{r save}
+save.image("halictid_genome_analysis_RQ3.RData")
+```
+
+## Clear environment
+
+```{r clear}
+rm(list = ls())
+```

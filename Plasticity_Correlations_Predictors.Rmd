@@ -1,0 +1,826 @@
+---
+title: "RQ4_causes - revised"
+author: "Karen M. Kapheim"
+date: "January 24, 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include = TRUE,echo = TRUE,message = FALSE,warning = FALSE,error=FALSE)
+knitr::opts_chunk$set(tidy = TRUE, fig.width = 8, fig.height = 8, fig.pos = "center",
+               cache = FALSE)
+```
+
+## Load Packages
+
+Load the necessary packages.
+
+```{r library, include = FALSE}
+library(knitr)
+library(ppcor)
+library(knitcitations)
+library(limma)
+library(plyr)
+library(edgeR)
+library(tidyr)
+library(GOstats)
+library(GSEABase)
+library(foreign)
+library(ggplot2)
+library(MASS)
+library(Hmisc)
+library(reshape2)
+library(FSA)
+library(doBy)
+library(RColorBrewer)
+library(Glimma)
+library(glmulti)
+library(car)
+library(nortest)
+library(visreg)
+library(MuMIn)
+library(mgcv)
+library(arm)
+#library(rgl)
+library(plot3D)
+library(multcomp)
+library(fields)
+library(corrplot)
+```
+
+## Get data
+
+```{r data}
+load(file = "halictid_genome_data.RDA")
+#load("mgen.gene.data.causes.r.RDA")
+load("halictid_genome_analysis_RQ4.RData")
+```
+
+
+## RQ4. What are the causes of social plasticity?
+
+Use the plasticity index (Schrader et al. 2017 MBE) to identify predictors of social plasticity.
+
+### Prep the data
+
+```{r subset}
+colnames(mgen.gene.data)
+mgen.gene.data.causes <- mgen.gene.data[,c("gene", "AveExpr", "pi.sex.norm", "pi.stage.norm", "pi.soc.abd.norm", "pi.soc.br.norm", "nAge", "EvoRate",  "cv.sex", "cv.stage", "cv.soc.abd", "cv.soc.br", "orthogroup_duplicability", "orthogroup_cnv")]
+colnames(mgen.gene.data.causes)
+dim(mgen.gene.data.causes)
+rownames(mgen.gene.data.causes) <- mgen.gene.data.causes$gene
+mgen.gene.data.causes <- mgen.gene.data.causes[,-1]
+mgen.gene.data.causes.r <- mgen.gene.data.causes[complete.cases(mgen.gene.data.causes[,c("pi.soc.abd.norm")]),]
+dim(mgen.gene.data.causes.r)
+table(mgen.gene.data.causes.r$nAge) # make sure unique genes are still there
+# assess distribution 
+hist(mgen.gene.data.causes.r$pi.soc.abd.norm)
+hist(log(mgen.gene.data.causes.r$pi.soc.abd.norm+0.05))
+```
+
+### Social plasticity in the abdomen
+
+Need to do the following: 
+1. Orthogroup age should be a numeric variable, not a factor
+2. Scale/standardize the predictor variables so that the coefficients are comparable
+3. Address multicollinearity among predictor variables
+
+###### Change orthogroup age to a numeric variable
+
+```{r rev -1}
+class(mgen.gene.data.causes.r$nAge)
+mgen.gene.data.causes.r$nAge <- as.numeric(mgen.gene.data.causes.r$nAge)
+class(mgen.gene.data.causes.r$nAge)
+```
+
+
+
+###### Check for multicollinearity
+From Zuur et al. 2010 Methods in Ecology and Evolution (https://doi.org/10.1111/j.2041-210X.2009.00001.x)
+
+> One strategy for addressing this problem is to sequentially drop the covariate with the highest VIF, recalculate the VIFs and repeat this process until all VIFs are smaller than a pre‐selected threshold. Montgomery & Peck (1992) used a value of 10, but a more stringent approach is to use values as low as 3 as we did here... The easiest way to solve collinearity is by dropping collinear covariates. The choice of which covariates to drop can be based on the VIFs, or perhaps better, on common sense or biological knowledge...Whenever two covariates X and Z are collinear, and Z is used in the statistical analysis, then the biological discussion in which the effect of Z is explained should include mention of the collinearity, and recognize that it might well be X that is driving the system (cf. Gjerdrum et al. 2008). For a discussion of collinearity in combination with measurement errors on the covariates, see Carroll et al. (2006).
+
+Build the function from:
+
+http://highstat.com/Books/BGS/GAMM/RCodeP2/HighstatLibV6.R
+
+> Library files for courses provided by: Highland Statistics Ltd.
+To cite these functions, use:
+Mixed effects models and extensions in ecology with R. (2009).
+Zuur, AF, Ieno, EN, Walker, N, Saveliev, AA, and Smith, GM. Springer.
+
+
+```{r rev-3a}
+#VIF FUNCTION.
+#To use:  corvif(YourDataFile)
+corvif <- function(dataz) {
+  dataz <- as.data.frame(dataz)
+  #correlation part
+  #cat("Correlations of the variables\n\n")
+  #tmp_cor <- cor(dataz,use="complete.obs")
+  #print(tmp_cor)
+  
+  #vif part
+  form    <- formula(paste("fooy ~ ",paste(strsplit(names(dataz)," "),collapse=" + ")))
+  dataz   <- data.frame(fooy=1,dataz)
+  lm_mod  <- lm(form,dataz)
+  
+  cat("\n\nVariance inflation factors\n\n")
+  print(myvif(lm_mod))
+}
+
+
+#Support function for corvif. Will not be called by the user
+myvif <- function(mod) {
+  v <- vcov(mod)
+  assign <- attributes(model.matrix(mod))$assign
+  if (names(coefficients(mod)[1]) == "(Intercept)") {
+    v <- v[-1, -1]
+    assign <- assign[-1]
+  } else warning("No intercept: vifs may not be sensible.")
+  terms <- labels(terms(mod))
+  n.terms <- length(terms)
+  if (n.terms < 2) stop("The model contains fewer than 2 terms")
+  if (length(assign) > dim(v)[1] ) {
+    diag(tmp_cor)<-0
+    if (any(tmp_cor==1.0)){
+      return("Sample size is too small, 100% collinearity is present")
+    } else {
+      return("Sample size is too small")
+    }
+  }
+  R <- cov2cor(v)
+  detR <- det(R)
+  result <- matrix(0, n.terms, 3)
+  rownames(result) <- terms
+  colnames(result) <- c("GVIF", "Df", "GVIF^(1/2Df)")
+  for (term in 1:n.terms) {
+    subs <- which(assign == term)
+    result[term, 1] <- det(as.matrix(R[subs, subs])) * det(as.matrix(R[-subs, -subs])) / detR
+    result[term, 2] <- length(subs)
+  }
+  if (all(result[, 2] == 1)) {
+    result <- data.frame(GVIF=result[, 1])
+  } else {
+    result[, 3] <- result[, 1]^(1/(2 * result[, 2]))
+  }
+  invisible(result)
+}
+#END VIF FUNCTIONS
+```
+
+Now run the function
+
+```{r rev-3b}
+colnames(mgen.gene.data.causes.r)
+mgen.gene.data.causes.r.soc.ab <- mgen.gene.data.causes.r[,c(1:7,10,12:13)]
+colnames(mgen.gene.data.causes.r.soc.ab)
+vif.soc.ab.1 <- corvif(mgen.gene.data.causes.r.soc.ab[,c(1:3,5:10)])
+vif.soc.ab.1
+colnames(mgen.gene.data.causes.r)
+mgen.gene.data.causes.r.soc.br <- mgen.gene.data.causes.r[,c(1:7,11:13)]
+colnames(mgen.gene.data.causes.r.soc.br)
+vif.soc.br.1 <- corvif(mgen.gene.data.causes.r.soc.br[,c(1:4,6:10)])
+vif.soc.br.1
+```
+
+None of the variables have VIF > 3. Keeping all variables.
+
+###### Standardize  variables
+
+Include orthogroup age, since the numeric values are dummy variables?
+* Try it with including orthogroup age for now.
+
+```{r rev-2}
+mgen.gene.data.causes.r.soc.ab.std <- scale(mgen.gene.data.causes.r.soc.ab[,c(1:3,5:10)],center = T, scale = T)
+mgen.gene.data.causes.r.soc.br.std <- scale(mgen.gene.data.causes.r.soc.br[,c(1:4,6:10)],center = T, scale = T)
+mgen.gene.data.causes.r.soc.ab.std <- as.data.frame(mgen.gene.data.causes.r.soc.ab.std)
+mgen.gene.data.causes.r.soc.ab.std.comp <- cbind(mgen.gene.data.causes.r.soc.ab$pi.soc.abd.norm , mgen.gene.data.causes.r.soc.ab.std)
+colnames(mgen.gene.data.causes.r.soc.ab.std.comp)[1] <- "pi.soc.abd.norm"
+mgen.gene.data.causes.r.soc.br.std <- as.data.frame(mgen.gene.data.causes.r.soc.br.std)
+mgen.gene.data.causes.r.soc.br.std.comp <- cbind(mgen.gene.data.causes.r.soc.br$pi.soc.br.norm , mgen.gene.data.causes.r.soc.br.std)
+colnames(mgen.gene.data.causes.r.soc.br.std.comp)[1] <- "pi.soc.br.norm"
+```
+
+###### Model selection
+
+```{r causes-abdomen-1}
+glm.m7.soc.ab <- glmulti(pi.soc.abd.norm ~ AveExpr + pi.sex.norm + I(pi.sex.norm^2) + pi.stage.norm + I(pi.stage.norm^2) + pi.soc.br.norm + I(pi.soc.br.norm^2) + nAge + EvoRate +  cv.soc.abd +  orthogroup_duplicability + orthogroup_cnv, 
+                        data = mgen.gene.data.causes.r.soc.ab.std.comp, 
+                        plotty = FALSE,
+                        report = FALSE,
+                        level = 1, 
+                        method = "h",
+                        crit = "aic", 
+                        confsetsize = 999,
+                        fitfunction = "glm",
+                        family = Gamma(link = "log"))
+print(glm.m7.soc.ab)
+plot(glm.m7.soc.ab)
+glm.wts7.soc.ab <- weightable(glm.m7.soc.ab)
+glm.wts7.soc.ab <- glm.wts7.soc.ab[glm.wts7.soc.ab$aic <= min(glm.wts7.soc.ab$aic) + 2,]
+glm.wts7.soc.ab$model
+summary(glm.m7.soc.ab@objects[[1]])
+plot(glm.m7.soc.ab, type = "s")
+plot(glm.m7.soc.ab@objects[[1]])
+```
+
+
+Multimodel Inference
+
+http://www.metafor-project.org/doku.php/tips:model_selection_with_glmulti
+> If we do want to make inferences about the various predictors, we may want to do so not in the context of a single model that is declared to be "best", but across all possible models (taking their relative weights into consideration). Multimodel inference can be used for this purpose...In addition, we get unconditional estimates of the model coefficients (first column). These are model-averaged parameter estimates, which are weighted averages of the model coefficients across the various models (with weights equal to the model probabilities). These values are called "unconditional" as they are not conditional on any one model (but they are still conditional on the 128 models that we have fitted to these data; but not as conditional as fitting a single model and then making all inferences conditional on that one single model). Moreover, we get estimates of the unconditional variances of these model-averaged values. These variance estimates take two sources of uncertainty into account: (1) uncertainty within a given model (i.e., the standard error of a particular model coefficient shown in the output when fitting a model; as an example, see the output from the "best" model shown earlier) and (2) uncertainty with respect to which model is actually the best approximation to reality (so this source of variability examines how much the size of a model coefficient varies across the set of candidate models). The model-averaged parameter estimates and the unconditional variances can be used for multimodel inference. For example, adding and subtracting the values in the last column from the model-averaged parameter estimates yields approximate 95% confidence intervals for each coefficient that are based not on any one model, but all models in the candidate set.
+
+```{r causes-abd-2}
+setOldClass("rma.uni")
+setMethod('getfit', 'rma.uni', function(object, ...) {
+   if (object$test=="z") {
+      cbind(estimate=coef(object), se=sqrt(diag(vcov(object))), df=Inf)
+   } else {
+      cbind(estimate=coef(object), se=sqrt(diag(vcov(object))), df=object$k-object$p)
+   }
+})
+round(coef(glm.m7.soc.ab),3)
+glm.m7.soc.ab.multimodal.coef <- as.data.frame(coef(glm.m7.soc.ab))
+glm.m7.soc.ab.multimodal.coef$lower95 <- glm.m7.soc.ab.multimodal.coef$Estimate - glm.m7.soc.ab.multimodal.coef$`+/- (alpha=0.05)`
+glm.m7.soc.ab.multimodal.coef$upper95 <- glm.m7.soc.ab.multimodal.coef$Estimate + glm.m7.soc.ab.multimodal.coef$`+/- (alpha=0.05)`
+glm.m7.soc.ab.multimodal.coef <- cbind(rownames(glm.m7.soc.ab.multimodal.coef), data.frame(glm.m7.soc.ab.multimodal.coef, row.names=NULL))
+colnames(glm.m7.soc.ab.multimodal.coef) [1] <- "Predictor"
+head(glm.m7.soc.ab.multimodal.coef)
+write.csv(glm.m7.soc.ab.multimodal.coef, file = "causes_abd_multimodel_coefs.csv")
+```
+
+Determine goodness of fit for top model
+
+```{r causes-abd-3}
+print(glm.m7.soc.ab)
+a.m1 <- glm(pi.soc.abd.norm ~ 1 + AveExpr + pi.sex.norm + I(pi.sex.norm^2) + pi.stage.norm + I(pi.stage.norm^2) + I(pi.soc.br.norm^2) + nAge, data = mgen.gene.data.causes.r.soc.ab.std.comp, family = Gamma(link = "log"))
+colnames(mgen.gene.data.causes.r.soc.ab.std.comp)
+tmp <- mgen.gene.data.causes.r.soc.ab.std.comp[complete.cases(mgen.gene.data.causes.r.soc.ab.std.comp[,c(1:6)]),]
+a.m0 <- glm(pi.soc.abd.norm ~ 1, data = tmp, family = Gamma(link = "log"))
+nobs(a.m1)
+nobs(a.m0)
+anova(a.m1,a.m0,test = "F")
+```
+
+##### Make plots
+
+```{r causes-ab-plot}
+glm.m7.soc.ab.multimodal.coef.nointercept <- glm.m7.soc.ab.multimodal.coef[!(glm.m7.soc.ab.multimodal.coef$Predictor == "(Intercept)"),]  
+glm.m7.soc.ab.multimodal.coef.nointercept$Predictor <- factor(glm.m7.soc.ab.multimodal.coef.nointercept$Predictor)
+levels(glm.m7.soc.ab.multimodal.coef.nointercept$Predictor)
+glm.m7.soc.ab.multimodal.coef.nointercept$Predictor <- factor(glm.m7.soc.ab.multimodal.coef.nointercept$Predictor, levels = c( "AveExpr", "cv.soc.abd","EvoRate","orthogroup_duplicability","orthogroup_cnv","nAge","I(pi.soc.br.norm^2)", "pi.soc.br.norm", "I(pi.stage.norm^2)", "pi.stage.norm", "I(pi.sex.norm^2)", "pi.sex.norm"))
+levels(glm.m7.soc.ab.multimodal.coef.nointercept$Predictor)
+svg("plasticity_causes_abd_coeff.svg")
+p.ab.coef <- ggplot(glm.m7.soc.ab.multimodal.coef.nointercept, aes(x = Predictor, y = Estimate)) + 
+  geom_bar(stat = "identity", color = "black",fill = "#ffab63") + 
+  geom_errorbar(aes(ymin = lower95, ymax = upper95, width = 0.5)) + 
+  xlab("Predictor variable") + ylab("Unconditional estimated coefficient")+
+  coord_flip() + 
+  theme(axis.title.x = element_text(size = 18)) + 
+  theme(axis.text.x = element_text(size = 14)) + 
+  theme(axis.title.y = element_text(size = 18)) + 
+  theme(axis.text.y = element_text(size = 16)) + 
+  scale_x_discrete(labels = c("Expression level","Within group expression variation", "Evolutionary rate", "Duplicability", "Copy number variation", "Age", "Brain social plasticity - quadratic", "Brain social plasticity - linear", "Developmental stage plasticity - quadratic", "Developmental stage plasticity - linear", "Sex plasticity - quadratic", "Sex plasticity - linear")) +
+  theme_classic()
+print(p.ab.coef)
+dev.off()
+p.ab.coef
+```
+
+###### Fit residuals
+
+```{r resid-abd-1}
+resid.soc.abd <- resid(glm.m7.soc.ab@objects[[1]])
+mean(resid.soc.abd)
+sd(resid.soc.abd)
+# residual mean = -0.1247697, sd = 0.6105208
+mgen.gene.data.causes.r$resid.soc.abd <- resid(glm.m7.soc.ab@objects[[1]])
+range(mgen.gene.data.causes.r$pi.soc.abd.norm)
+sd(mgen.gene.data.causes.r$pi.soc.abd.norm)
+mean(mgen.gene.data.causes.r$pi.soc.abd.norm)
+# 1 sd = 0.2164949, mean = 0.2409523
+quantile(mgen.gene.data.causes.r$resid.soc.abd, c(0 ,.1, .25, .33,.5, .67,.75, .9,1), na.rm=TRUE)
+mgen.gene.data.causes.r$resid.soc.abd.cat <- ""
+mgen.gene.data.causes.r$resid.soc.abd.cat[which(mgen.gene.data.causes.r$resid.soc.abd < abs(sd(mgen.gene.data.causes.r$pi.soc.abd.norm)))] <- "fit"
+mgen.gene.data.causes.r$resid.soc.abd.cat[which(mgen.gene.data.causes.r$resid.soc.abd < (-2*sd(mgen.gene.data.causes.r$pi.soc.abd.norm)))] <- "lower"
+mgen.gene.data.causes.r$resid.soc.abd.cat[which(mgen.gene.data.causes.r$resid.soc.abd < (-3*sd(mgen.gene.data.causes.r$pi.soc.abd.norm)))] <- "much_lower"
+mgen.gene.data.causes.r$resid.soc.abd.cat[which(mgen.gene.data.causes.r$resid.soc.abd > (2*sd(mgen.gene.data.causes.r$pi.soc.abd.norm)))] <- "higher"
+mgen.gene.data.causes.r$resid.soc.abd.cat[which(mgen.gene.data.causes.r$resid.soc.abd > (3*sd(mgen.gene.data.causes.r$pi.soc.abd.norm)))] <- "much_higher"
+table(mgen.gene.data.causes.r$resid.soc.abd.cat)
+```
+
+This method of categorizing residuals is centered on the residuals themselves. Using 0 +/- 1 s.d. of the 
+residual values as "fit", and going out from there with 2 and 3 s.d. from 0.
+
+```{r resid-abd-2}
+resid.soc.abd <- resid(glm.m7.soc.ab@objects[[1]])
+mean(resid.soc.abd)
+sd(resid.soc.abd)
+# residual mean = -0.1247697, sd = 0.6105208
+mgen.gene.data.causes.r$resid.soc.abd <- resid(glm.m7.soc.ab@objects[[1]])
+quantile(mgen.gene.data.causes.r$resid.soc.abd, c(0 ,.1, .25, .33,.5, .67,.75, .9,1), na.rm=TRUE)
+# mean residual is a little below 0. Center fit around 0, plus/minus s.d.
+mgen.gene.data.causes.r$resid.soc.abd.cat2 <- ""
+mgen.gene.data.causes.r$resid.soc.abd.cat2[which(mgen.gene.data.causes.r$resid.soc.abd < abs(0.6105208))] <- "fit"
+mgen.gene.data.causes.r$resid.soc.abd.cat2[which(mgen.gene.data.causes.r$resid.soc.abd < (-2*0.6105208))] <- "lower"
+mgen.gene.data.causes.r$resid.soc.abd.cat2[which(mgen.gene.data.causes.r$resid.soc.abd < (-3*0.6105208))] <- "much_lower"
+mgen.gene.data.causes.r$resid.soc.abd.cat2[which(mgen.gene.data.causes.r$resid.soc.abd > (2*0.6105208))] <- "higher"
+mgen.gene.data.causes.r$resid.soc.abd.cat2[which(mgen.gene.data.causes.r$resid.soc.abd > (3*0.6105208))] <- "much_higher"
+table(mgen.gene.data.causes.r$resid.soc.abd.cat2)
+```
+
+###### Functions of outlier genes
+
+The genes that are poorly predicted by the model are interesting, because they represent de novo regulatory changes leading to social function. 
+
+```{r fxn-abd-1}
+# merge files
+lfc.social.abd <- cbind(row.names(lfc.social.abd), data.frame(lfc.social.abd))
+colnames(lfc.social.abd)[1] <- "gene"
+mgen.gene.data.causes.r <- cbind(row.names(mgen.gene.data.causes.r), data.frame(mgen.gene.data.causes.r))
+colnames(mgen.gene.data.causes.r)[1] <- "gene"
+mgen.gene.data.causes.r.lfc <- dplyr::left_join(mgen.gene.data.causes.r,lfc.social.abd[,c("gene","soc.abd.qVw", "soc.abd.qVs", "soc.abd.qVr", "soc.abd.sVw", "soc.abd.sVr", "soc.abd.wVr", "adj.P.Val")],by="gene")
+# assign caste-bias
+mgen.gene.data.causes.r.lfc$caste.bias.abd <- "NObias"
+mgen.gene.data.causes.r.lfc$caste.bias.abd[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.qVw < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.sVw < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.wVr > 1.2 )] <- "Wbiased"
+mgen.gene.data.causes.r.lfc$caste.bias.abd[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.qVw > 1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.qVs > 1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.qVr > 1.2 )] <- "Qbiased"
+mgen.gene.data.causes.r.lfc$caste.bias.abd[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.sVw > 1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.qVs < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.sVr > 1.2 )] <- "Sbiased"
+mgen.gene.data.causes.r.lfc$caste.bias.abd[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.wVr < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.qVr < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.sVr < -1.2 )] <- "Rbiased"  
+table(mgen.gene.data.causes.r.lfc$caste.bias.abd)
+mgen.gene.data.causes.r.lfc$reprod.bias.abd <- "NObias"
+mgen.gene.data.causes.r.lfc$reprod.bias.abd[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.qVw < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.sVw < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.wVr > 1.2 )] <- "NonREPbiased"
+mgen.gene.data.causes.r.lfc$reprod.bias.abd[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.qVw > 1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.sVw > 1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.abd.wVr < -1.2 )] <- "REPbiased"
+table(mgen.gene.data.causes.r.lfc$reprod.bias.abd)
+table(mgen.gene.data.causes.r.lfc$reprod.bias.abd, mgen.gene.data.causes.r.lfc$caste.bias.abd)
+write.csv(mgen.gene.data.causes.r.lfc, file = "mgen.gene.data.causes.csv", quote = FALSE, row.names = FALSE)
+```
+
+Is there functional enrichment for poor fitting genes among reproductive aand non-reproductive genes?
+
+* Stick with cat2 - this is a more accurate reflection of residual value/deviance from predicted values.
+
+```{r fxn-abd-2}
+table(mgen.gene.data.causes.r.lfc$reprod.bias.abd, mgen.gene.data.causes.r.lfc$resid.soc.abd.cat)
+table(mgen.gene.data.causes.r.lfc$reprod.bias.abd, mgen.gene.data.causes.r.lfc$resid.soc.abd.cat2)
+#
+mgen.gene.data.causes.r.lfc.r <- subset(mgen.gene.data.causes.r.lfc, mgen.gene.data.causes.r.lfc$resid.soc.abd.cat2 != "" )
+table(mgen.gene.data.causes.r.lfc.r$reprod.bias.abd, mgen.gene.data.causes.r.lfc.r$resid.soc.abd.cat2)
+chisq.test(mgen.gene.data.causes.r.lfc.r$reprod.bias.abd, mgen.gene.data.causes.r.lfc.r$resid.soc.abd.cat2, correct=FALSE)
+```
+
+Genes that are overexpressed in reproductive abdomens are more likely to have higher social plasticity than predicted by the model (and thereby other forms of developmental plasticity).
+Genes without reproductive expression bias are more likely to be a good fit to the model or lower social plasticity than predicted by other forms of developmental plasticity.
+
+Compare model residuals across biased and non-biased genes.
+
+```{r glm-resids}
+dim(mgen.gene.data.causes.r.lfc.r)
+mgen.gene.data.causes.r.lfc.r$reprod.bias.abd <-  as.factor(mgen.gene.data.causes.r.lfc.r$reprod.bias.abd)
+print(levels(mgen.gene.data.causes.r.lfc.r$reprod.bias.abd))
+qqp(mgen.gene.data.causes.r.lfc.r$resid.soc.abd,"norm")
+norm.resid <- ad.test(mgen.gene.data.causes.r.lfc.r$resid.soc.abd)
+norm.resid
+histogram(~resid.soc.abd, data = mgen.gene.data.causes.r.lfc.r)
+m0.resid.abd <- glm(resid.soc.abd ~ 1, data = mgen.gene.data.causes.r.lfc.r)
+m1.resid.abd <- glm(resid.soc.abd ~ reprod.bias.abd, data = mgen.gene.data.causes.r.lfc.r)
+anova(m1.resid.abd)
+anova(m0.resid.abd, m1.resid.abd, test = "F")
+summary(m1.resid.abd)
+summary(glht(m1.resid.abd, mcp(reprod.bias.abd="Tukey")))
+```
+Now make box plots
+
+```{r plot-resids}
+mgen.gene.data.causes.r.lfc.r$reprod.bias.abd <-  as.factor(mgen.gene.data.causes.r.lfc.r$reprod.bias.abd)
+print(levels(mgen.gene.data.causes.r.lfc.r$reprod.bias.abd))
+# plot abdomen
+graphics.off()
+svg("resid_abd.svg")
+p.resid.abd<- ggplot(mgen.gene.data.causes.r.lfc.r, aes(x = reprod.bias.abd, y = resid.soc.abd, fill = reprod.bias.abd)) +
+  geom_boxplot() +
+  annotate("text",x=1,y=-0.0, label = "a", color = "black", size = 6) +
+  annotate("text",x=2,y=0.8, label = "b", color = "black", size = 6) +
+  annotate("text",x=3,y=0.85,label = "c", color = "black", size = 6) +
+  scale_y_continuous(name = "Residual values") +
+  scale_x_discrete(name = "Expression profile", labels = c("No bias", "Non-reproductive\nbias", "Reproductive\nbias")) +
+  theme(text = element_text(color = "black", size = 24),
+        axis.title = element_text(color = "black"),
+        axis.text.x = element_text(color = "black", size = 18),
+        axis.text.y = element_text(color = "black", size = 18),
+        legend.position = 'none',
+        legend.background = element_blank(),
+        legend.title = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(size = 0.5,linetype = "solid", colour = "black")) +
+  scale_fill_manual(values = c("#d0d2dd","#d0d2dd","#d0d2dd"))
+print(p.resid.abd)
+dev.off()
+ggsave("resid_abd.png", dpi=600)
+```
+
+
+### Social plasticity in the brain
+
+###### Model selection
+
+
+```{r causes-brain}
+glm.m7.soc.br <- glmulti(pi.soc.br.norm ~ AveExpr + pi.sex.norm + I(pi.sex.norm^2) + pi.stage.norm + I(pi.stage.norm^2) + pi.soc.abd.norm + I(pi.soc.abd.norm^2) + nAge + EvoRate + cv.soc.br +  orthogroup_duplicability + orthogroup_cnv, 
+                        data = mgen.gene.data.causes.r.soc.br.std.comp, 
+                        plotty = FALSE,
+                        report = FALSE,
+                        level = 1, 
+                        method = "h",
+                        crit = "aic", 
+                        confsetsize = 999,
+                        fitfunction = "glm",
+                        family = Gamma(link = "log"))
+print(glm.m7.soc.br)
+plot(glm.m7.soc.br)
+glm.wts7.soc.br <- weightable(glm.m7.soc.br)
+glm.wts7.soc.br <- glm.wts7.soc.ab[glm.wts7.soc.br$aic <= min(glm.wts7.soc.br$aic) + 2,]
+glm.wts7.soc.br$model
+summary(glm.m7.soc.br@objects[[1]])
+plot(glm.m7.soc.br, type = "s")
+plot(glm.m7.soc.br@objects[[1]])
+```
+
+Multimodel Inference
+
+http://www.metafor-project.org/doku.php/tips:model_selection_with_glmulti
+> If we do want to make inferences about the various predictors, we may want to do so not in the context of a single model that is declared to be "best", but across all possible models (taking their relative weights into consideration). Multimodel inference can be used for this purpose...In addition, we get unconditional estimates of the model coefficients (first column). These are model-averaged parameter estimates, which are weighted averages of the model coefficients across the various models (with weights equal to the model probabilities). These values are called "unconditional" as they are not conditional on any one model (but they are still conditional on the 128 models that we have fitted to these data; but not as conditional as fitting a single model and then making all inferences conditional on that one single model). Moreover, we get estimates of the unconditional variances of these model-averaged values. These variance estimates take two sources of uncertainty into account: (1) uncertainty within a given model (i.e., the standard error of a particular model coefficient shown in the output when fitting a model; as an example, see the output from the "best" model shown earlier) and (2) uncertainty with respect to which model is actually the best approximation to reality (so this source of variability examines how much the size of a model coefficient varies across the set of candidate models). The model-averaged parameter estimates and the unconditional variances can be used for multimodel inference. For example, adding and subtracting the values in the last column from the model-averaged parameter estimates yields approximate 95% confidence intervals for each coefficient that are based not on any one model, but all models in the candidate set.
+
+```{r causes-br-2}
+setOldClass("rma.uni")
+setMethod('getfit', 'rma.uni', function(object, ...) {
+   if (object$test=="z") {
+      cbind(estimate=coef(object), se=sqrt(diag(vcov(object))), df=Inf)
+   } else {
+      cbind(estimate=coef(object), se=sqrt(diag(vcov(object))), df=object$k-object$p)
+   }
+})
+round(coef(glm.m7.soc.br),3)
+glm.m7.soc.br.multimodal.coef <- as.data.frame(coef(glm.m7.soc.br))
+glm.m7.soc.br.multimodal.coef$lower95 <- glm.m7.soc.br.multimodal.coef$Estimate - glm.m7.soc.br.multimodal.coef$`+/- (alpha=0.05)`
+glm.m7.soc.br.multimodal.coef$upper95 <- glm.m7.soc.br.multimodal.coef$Estimate + glm.m7.soc.br.multimodal.coef$`+/- (alpha=0.05)`
+glm.m7.soc.br.multimodal.coef <- cbind(rownames(glm.m7.soc.br.multimodal.coef), data.frame(glm.m7.soc.br.multimodal.coef, row.names=NULL))
+colnames(glm.m7.soc.br.multimodal.coef) [1] <- "Predictor"
+head(glm.m7.soc.br.multimodal.coef)
+write.csv(glm.m7.soc.br.multimodal.coef, file = "causes_br_multimodel_coefs.csv")
+```
+
+Determine goodness of fit for top model
+
+```{r causes-br-3}
+print(glm.m7.soc.br)
+a.m1 <- glm(pi.soc.br.norm ~ 1 + AveExpr + pi.sex.norm + I(pi.sex.norm^2) + pi.stage.norm + I(pi.stage.norm^2) + pi.soc.abd.norm + I(pi.soc.abd.norm^2) + nAge + cv.soc.br, data = mgen.gene.data.causes.r.soc.br.std.comp, family = Gamma(link = "log"))
+colnames(mgen.gene.data.causes.r.soc.br.std.comp)
+tmp <- mgen.gene.data.causes.r.soc.br.std.comp[complete.cases(mgen.gene.data.causes.r.soc.br.std.comp[,c(1:6,8)]),]
+a.m0 <- glm(pi.soc.br.norm ~ 1, data = tmp, family = Gamma(link = "log"))
+nobs(a.m1)
+nobs(a.m0)
+anova(a.m1,a.m0,test = "F")
+```
+###### Make plots
+
+```{r causes-br-plot}
+svg("plasticity_causes_brain_coeff.svg")
+glm.m7.soc.br.multimodal.coef.nointercept <- glm.m7.soc.br.multimodal.coef[!(glm.m7.soc.br.multimodal.coef$Predictor == "(Intercept)"),]  
+levels(glm.m7.soc.br.multimodal.coef.nointercept$Predictor)
+glm.m7.soc.br.multimodal.coef.nointercept$Predictor <- factor(glm.m7.soc.br.multimodal.coef.nointercept$Predictor, levels = c("(Intercept)", "AveExpr", "cv.soc.br","EvoRate","orthogroup_duplicability","orthogroup_cnv","nAge","I(pi.soc.abd.norm^2)",  "pi.soc.abd.norm", "I(pi.stage.norm^2)", "pi.stage.norm", "I(pi.sex.norm^2)", "pi.sex.norm"))
+levels(glm.m7.soc.br.multimodal.coef.nointercept$Predictor)
+
+p.br.coef <- ggplot(glm.m7.soc.br.multimodal.coef.nointercept, aes(x = Predictor, y = Estimate)) + 
+  geom_bar(stat = "identity", color = "black",fill = "#4e8778") + 
+  geom_errorbar(aes(ymin = lower95, ymax = upper95, width = 0.5)) + 
+  xlab("Predictor variable") + ylab("Unconditional estimated coefficient")+
+  coord_flip() + 
+  theme(axis.title.x = element_text(size = 18)) + 
+  theme(axis.text.x = element_text(size = 14)) + 
+  theme(axis.title.y = element_text(size = 18)) + 
+  theme(axis.text.y = element_text(size = 16)) + 
+  scale_x_discrete(labels = c("Expression level","Within group expression variation", "Evolutionary rate", "Duplicability", "Copy number variation", "Age", "Abdominal social plasticity - quadratic", "Abdominal social plasticity - linear", "Developmental stage plasticity - quadratic", "Developmental stage plasticity - linear", "Sex plasticity - quadratic", "Sex plasticity - linear")) +
+  theme_classic()
+print(p.br.coef)
+dev.off()
+p.br.coef
+```
+
+###### Fit residuals
+
+```{r resid-br}
+resid.soc.br <- as.data.frame(resid(glm.m7.soc.br@objects[[1]]))
+colnames(resid.soc.br) <- c("resid.soc.br")
+resid.soc.br <- cbind(row.names(resid.soc.br), data.frame(resid.soc.br))
+colnames(resid.soc.br)[1] <- "gene"
+mgen.gene.data.causes.r <- merge(mgen.gene.data.causes.r,resid.soc.br,by="gene", all.x = TRUE)
+range(mgen.gene.data.causes.r$pi.soc.br.norm)
+sd(mgen.gene.data.causes.r$pi.soc.br.norm)
+mean(mgen.gene.data.causes.r$pi.soc.br.norm)
+# 1 sd = 0.1012936, mean = 0.1006122
+quantile(mgen.gene.data.causes.r$resid.soc.br, c(0 ,.1, .25, .33,.5, .67,.75, .9,1), na.rm=TRUE)
+mgen.gene.data.causes.r$resid.soc.br.cat <- ""
+mgen.gene.data.causes.r$resid.soc.br.cat[which(mgen.gene.data.causes.r$resid.soc.br < abs(sd(mgen.gene.data.causes.r$pi.soc.br.norm)))] <- "fit"
+mgen.gene.data.causes.r$resid.soc.br.cat[which(mgen.gene.data.causes.r$resid.soc.br < (-2*sd(mgen.gene.data.causes.r$pi.soc.br.norm)))] <- "lower"
+mgen.gene.data.causes.r$resid.soc.br.cat[which(mgen.gene.data.causes.r$resid.soc.br < (-3*sd(mgen.gene.data.causes.r$pi.soc.br.norm)))] <- "much_lower"
+mgen.gene.data.causes.r$resid.soc.br.cat[which(mgen.gene.data.causes.r$resid.soc.br > (2*sd(mgen.gene.data.causes.r$pi.soc.br.norm)))] <- "higher"
+mgen.gene.data.causes.r$resid.soc.br.cat[which(mgen.gene.data.causes.r$resid.soc.br > (3*sd(mgen.gene.data.causes.r$pi.soc.br.norm)))] <- "much_higher"
+table(mgen.gene.data.causes.r$resid.soc.br.cat)
+```
+
+
+```{r resid-br-2}
+resid.soc.br <- resid(glm.m7.soc.br@objects[[1]])
+mean(resid.soc.br)
+sd(resid.soc.br)
+# residual mean = -0.1003549, sd = 0.5505203
+resid.soc.br <- as.data.frame(resid(glm.m7.soc.br@objects[[1]]))
+colnames(resid.soc.br) <- c("resid.soc.br")
+resid.soc.br <- cbind(row.names(resid.soc.br), data.frame(resid.soc.br))
+colnames(resid.soc.br)[1] <- "gene"
+mgen.gene.data.causes.r <- merge(mgen.gene.data.causes.r,resid.soc.br,by="gene", all.x = TRUE)
+quantile(mgen.gene.data.causes.r$resid.soc.br.y, c(0 ,.1, .25, .33,.5, .67,.75, .9,1), na.rm=TRUE)
+# mean residual is a little below 0. Center fit around 0, plus/minus s.d.
+mgen.gene.data.causes.r$resid.soc.br.cat2 <- ""
+mgen.gene.data.causes.r$resid.soc.br.cat2[which(mgen.gene.data.causes.r$resid.soc.br.y < abs(0.5505203))] <- "fit"
+mgen.gene.data.causes.r$resid.soc.br.cat2[which(mgen.gene.data.causes.r$resid.soc.br.y< (-2*0.5505203))] <- "lower"
+mgen.gene.data.causes.r$resid.soc.br.cat2[which(mgen.gene.data.causes.r$resid.soc.br.y < (-3*0.5505203))] <- "much_lower"
+mgen.gene.data.causes.r$resid.soc.br.cat2[which(mgen.gene.data.causes.r$resid.soc.br.y > (2*0.5505203))] <- "higher"
+mgen.gene.data.causes.r$resid.soc.br.cat2[which(mgen.gene.data.causes.r$resid.soc.br.y > (3*0.5505203))] <- "much_higher"
+table(mgen.gene.data.causes.r$resid.soc.br.cat2)
+```
+
+###### Functions of outlier genes
+
+The genes that are poorly predicted by the model are interesting, because they represent de novo regulatory changes leading to social function. 
+
+```{r fxn-br-1}
+# merge files
+lfc.social.br <- cbind(row.names(lfc.social.br), data.frame(lfc.social.br))
+colnames(lfc.social.br)[1] <- "gene"
+mgen.gene.data.causes.r.lfc <- dplyr::left_join(mgen.gene.data.causes.r,lfc.social.br[,c("gene","soc.br.qVw", "soc.br.qVs", "soc.br.qVr", "soc.br.sVw", "soc.br.sVr", "soc.br.wVr", "adj.P.Val")],by="gene")
+# assign caste-bias
+mgen.gene.data.causes.r.lfc$caste.bias.br <- "NObias"
+mgen.gene.data.causes.r.lfc$caste.bias.br[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.qVw < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.sVw < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.wVr > 1.2 )] <- "Wbiased"
+mgen.gene.data.causes.r.lfc$caste.bias.br[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.qVw > 1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.qVs > 1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.qVr > 1.2 )] <- "Qbiased"
+mgen.gene.data.causes.r.lfc$caste.bias.br[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.sVw > 1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.qVs < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$br.sVr > 1.2 )] <- "Sbiased"
+mgen.gene.data.causes.r.lfc$caste.bias.br[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.wVr < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.qVr < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.sVr < -1.2 )] <- "Rbiased"  
+table(mgen.gene.data.causes.r.lfc$caste.bias.br)
+mgen.gene.data.causes.r.lfc$reprod.bias.br <- "NObias"
+mgen.gene.data.causes.r.lfc$reprod.bias.br[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.qVw < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.sVw < -1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.wVr > 1.2 )] <- "NonREPbiased"
+mgen.gene.data.causes.r.lfc$reprod.bias.br[which(mgen.gene.data.causes.r.lfc$adj.P.Val < 0.05 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.qVw > 1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.sVw > 1.2 & 
+                                    mgen.gene.data.causes.r.lfc$soc.br.wVr < -1.2 )] <- "REPbiased"
+table(mgen.gene.data.causes.r.lfc$reprod.bias.br)
+table(mgen.gene.data.causes.r.lfc$reprod.bias.br, mgen.gene.data.causes.r.lfc$caste.bias.br)
+write.csv(mgen.gene.data.causes.r.lfc, file = "mgen.gene.data.causes.csv", quote = FALSE, row.names = FALSE)
+```
+
+### How is developmental plasticity correlated with social plasticity?
+
+Use log fold change values to look for correlations across contrasts. Identify the strongest correlations.  
+
+```{r rcor}
+lfc.all <- lfc.all[1:(length(lfc.all)-4)]
+lfc.all.spear <- rcorr(as.matrix(lfc.all), type = "spearman")
+# adjust p values
+lfc.all.spear.adjP <- as.matrix(p.adjust(lfc.all.spear[["P"]]))
+# flatten results - make function from http://www.sthda.com/english/wiki/correlation-matrix-a-quick-start-guide-to-analyze-format-and-visualize-a-correlation-matrix-using-r-software#compute-correlation-matrix
+# cormat : matrix of the correlation coefficients
+# pmat : matrix of the correlation p-values
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+  )
+}
+lfc.all.spear.results <- flattenCorrMatrix(lfc.all.spear$r, lfc.all.spear$P)
+lfc.all.spear.results
+lfc.all.spear.results$p.adjust <- p.adjust(lfc.all.spear.results$p)
+write.csv(lfc.all.spear.results, file = "lfc_cortests.csv")
+```
+
+
+```{r corplots}
+# plot
+#corrplot(lfc.all.spear[["r"]], p.mat = lfc.all.spear.adjP, 
+#         type = "upper", order = "original",
+#         tl.col = "black", sig.level = 0.001, 
+#         method = "color", outline = T,
+#         addCoef.col = "black", diag = T, number.cex = .2)
+#corrplot(lfc.all.spear[["r"]], p.mat = lfc.all.spear.adjP, 
+#         type = "upper", order = "original",
+#         tl.col = "black", sig.level = 0.001, 
+#         method = "color", outline = F,
+#         addCoef.col = "black", diag = T, number.cex = .2)
+svg("lfc_cor.svg")
+p.lfc.cor <- corrplot::corrplot(lfc.all.spear[["r"]], p.mat = lfc.all.spear.adjP, 
+         type = "upper", order = "original",
+         tl.col = "black", sig.level = 0.001, 
+         method = "circle", outline = T)
+print(p.lfc.cor)
+dev.off()
+p.lfc.cor
+svg("lfc_cor_nolab.svg")
+p.lfc.cor <- corrplot::corrplot(lfc.all.spear[["r"]], p.mat = lfc.all.spear.adjP, 
+         type = "upper", order = "original",
+         tl.col = "white", sig.level = 0.001, 
+         method = "circle", outline = T)
+print(p.lfc.cor)
+dev.off()
+p.lfc.cor
+# not showing insignificant correlations
+svg("lfc_cor_noinsig.svg")
+p.lfc.cor.noinsig <- corrplot::corrplot(lfc.all.spear[["r"]], p.mat = lfc.all.spear.adjP, 
+         type = "upper", order = "original",
+         tl.col = "black", 
+         insig = "pch", sig.level = 0.1, 
+         method = "circle", outline = F)
+print(p.lfc.cor.noinsig)
+dev.off()
+```
+
+
+## Save some data
+
+```{r save2}
+save(mgen.gene.data.causes.r, mgen.gene.data.causes.r.lfc.r, mgen.gene.data.causes.r.lfc,  file = "RQ4_model_results.RDA")
+```
+ 
+### Visualize results
+
+2D plots
+
+```{r 2dplots-1}
+svg("causes_soc_abd_stage_2D.svg")
+p.causes.soc.abd.stage <- ggplot(mgen.gene.data.causes.r, 
+                                 aes(x =pi.stage.norm, y = pi.soc.abd.norm)) +
+  geom_point(shape = 21, size = 4, fill = "#ffd4b0") + 
+  geom_smooth(method = "lm", formula = y ~ x + I(x^2), se = TRUE, color = "black") + 
+  scale_alpha(range = c(0, 1)) +
+  scale_y_continuous(breaks = seq(0,3,0.5)) +
+  scale_x_continuous(breaks = seq(0,3.5,0.5))  + 
+  labs(y = "Social plasiticy index (abdomen)", 
+       x = "Developmental plasticity index (stage)",
+       fill = "Residual Values") + 
+  theme(legend.position = "top", 
+        legend.direction = "horizontal",
+        text = element_text(color = "black", size = 18),
+        axis.title = element_text(color = "black", size = 18),
+        axis.text.x = element_text(color = "black", size = 18),
+        axis.text.y = element_text(color = "black", size = 18),
+        legend.background = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(size = 0.5,linetype = "solid", colour = "black"))
+print(p.causes.soc.abd.stage)
+dev.off()
+p.causes.soc.abd.stage
+```
+
+```{r 2Dplots-2}
+svg("causes_soc_abd_sex_2D.svg")
+p.causes.soc.abd.sex <- ggplot(mgen.gene.data.causes.r, 
+                                 aes(x =pi.sex.norm, y = pi.soc.abd.norm)) +
+  geom_point(shape = 21, size = 4, fill = "#ff8217") +
+  geom_smooth(method = "lm", formula = y ~ x + I(x^2), se = TRUE, color = "black") + 
+  scale_alpha(range = c(0, 1)) +
+  scale_y_continuous(breaks = seq(0,3,0.5)) +
+  scale_x_continuous(breaks = seq(0,4,0.5))  + 
+  labs(y = "Social plasiticy index (abdomen)", 
+       x = "Developmental plasticity index (sex)",
+       fill = "Residual Values") + 
+  theme(legend.position = "top", 
+        legend.direction = "horizontal",
+        text = element_text(color = "black", size = 18),
+        axis.title = element_text(color = "black", size = 18),
+        axis.text.x = element_text(color = "black", size = 18),
+        axis.text.y = element_text(color = "black", size = 18),
+        legend.background = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(size = 0.5,linetype = "solid", colour = "black"))
+print(p.causes.soc.abd.sex)
+dev.off()
+p.causes.soc.abd.sex
+```
+#
+```{r 2Dplots-3}
+svg("causes_soc_br_stage_2D.svg")
+p.causes.soc.br.stage <- ggplot(mgen.gene.data.causes.r, 
+                                 aes(x =pi.stage.norm, y = pi.soc.br.norm)) +
+  geom_point(shape = 21, size = 4, fill = "#73ae9f") +
+  geom_smooth(method = "lm", formula = y ~ x + I(x^2), se = TRUE, color = "black") + 
+  scale_alpha(range = c(0, 1)) +
+  scale_y_continuous(breaks = seq(0,3,0.5)) +
+  scale_x_continuous(breaks = seq(0,3.5,0.5))  + 
+  labs(y = "Social plasiticy index (brain)", 
+       x = "Developmental plasticity index (stage)",
+       fill = "Residual Values") + 
+  theme(legend.position = "top", 
+        legend.direction = "horizontal",
+        text = element_text(color = "black", size = 18),
+        axis.title = element_text(color = "black", size = 18),
+        axis.text.x = element_text(color = "black", size = 18),
+        axis.text.y = element_text(color = "black", size = 18),
+        legend.background = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(size = 0.5,linetype = "solid", colour = "black"))
+print(p.causes.soc.br.stage)
+dev.off()
+p.causes.soc.br.stage
+```
+
+#
+```{r 2Dplots-4}
+svg("causes_soc_br_sex_2D.svg")
+p.causes.soc.br.sex <- ggplot(mgen.gene.data.causes.r, 
+                                 aes(x =pi.sex.norm, y = pi.soc.br.norm)) +
+  geom_point(shape = 21, size = 4, fill = "#32574d") +
+  geom_smooth(method = "lm", formula = y ~ x + I(x^2), se = TRUE, color = "black") + 
+  scale_alpha(range = c(0, 1)) +
+  scale_y_continuous(breaks = seq(0,3,0.5)) +
+  scale_x_continuous(breaks = seq(0,4,0.5))  + 
+  labs(y = "Social plasiticy index (brain)", 
+       x = "Developmental plasticity index (sex)",
+       fill = "Residual Values") + 
+  theme(legend.position = "top", 
+        legend.direction = "horizontal",
+        text = element_text(color = "black", size = 18),
+        axis.title = element_text(color = "black", size = 18),
+        axis.text.x = element_text(color = "black", size = 18),
+        axis.text.y = element_text(color = "black", size = 18),
+        legend.background = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(size = 0.5,linetype = "solid", colour = "black"))
+print(p.causes.soc.br.sex)
+dev.off()
+p.causes.soc.br.sex
+```
+
+
+## Save project
+
+ 
+```{r save}
+save.image("halictid_genome_analysis_RQ4.RData")
+```
+
+## Clear environment
+
+```{r clear}
+rm(list = ls())
+```
+
+

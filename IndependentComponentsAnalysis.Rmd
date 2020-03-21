@@ -1,0 +1,890 @@
+---
+title: "RQ6_networks"
+author: "Karen M. Kapheim"
+date: "April 4, 2018"
+output: pdf_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include = TRUE,echo = TRUE,message = FALSE,warning = FALSE,error=FALSE)
+knitr::opts_chunk$set(tidy = TRUE, fig.width = 8, fig.height = 8, fig.pos = "center",
+               cache = FALSE)
+```
+
+## Load Packages
+
+Load the necessary packages.
+
+```{r library, include = FALSE}
+library(knitr)
+library(ppcor)
+library(knitcitations)
+library(limma)
+library(plyr)
+library(edgeR)
+library(tidyr)
+library(GOstats)
+library(GSEABase)
+library(foreign)
+library(ggplot2)
+library(MASS)
+library(Hmisc)
+library(reshape2)
+library(FSA)
+library(doBy)
+library(RColorBrewer)
+library(Glimma)
+library(glmulti)
+library(car)
+library(nortest)
+library(visreg)
+library(MuMIn)
+library(mgcv)
+library(arm)
+library(rgl)
+library(MineICA)
+library(Biobase)
+```
+
+## Get data
+
+```{r data-1}
+load(file = "halictid_genome_data.RDA")
+ load(file = "fastICAsets.RDA")
+load("halictid_genome_analysis_RQ6.RData")
+```
+
+## RQ6. How do social plasticity gene networks correspond to developmental plasticity gene networks?
+
+Other papers that have used this technique with gene expression data:
+
+Teschendorff AE, Journée M. Absil P a, Sepulchre R. Caldas C. Elucidating the altered transcriptional programs in breast cancer using independent component analysis. PLoS Comput Biol. 2007;3(8):e161.
+
+Biton A, Bernard-Pierrot I, Lou Y, Krucker C, Chapeaublanc E, Rubio-Pérez C, et al. Independent component analysis uncovers the landscape of the bladder tumor Transcriptome and reveals insights into luminal and basal subtypes. Cell Rep. 2014;9(4):1235–45.
+
+Gorban A, Kegl B, Wunch D, Zinovyev A. Principal Manifolds for Data Visualisation and Dimension Reduction. Lect notes Comput Sci Eng. 2008;58:340p.
+
+Saidi SA, Holland CM, Kreil DP, MacKay DJ, Charnock-Jones DS, Print CG, et al. Independent component analysis of microarray data in the study of endometrial cancer. Oncogene. 2004;23(39):6677–83.
+
+Zinovyev A, Kairov U, Karpenyuk T, Ramanculov E. Blind source separation methods for deconvolution of complex signals in cancer biology. Biochem Biophys Res Commun 2013;430(3):1182–7.
+
+
+
+### Independent ICA on development and social samples
+
+#### Create and prepare the expression set
+
+```{r data-2}
+mgen.rna.targets <- read.delim("RNAseq_targets_file.txt", header = TRUE)
+mgen.rna.raw_counts <- read.csv("RNAseq_Raw_counts_table.csv", header = TRUE, row.names = 1)
+```
+
+###### Create expression set 
+
+Start with all data
+
+```{r deg-1}
+y.mgen.rna <- DGEList(counts = mgen.rna.raw_counts, samples = mgen.rna.targets, group = mgen.rna.targets$tau_tissue)
+y.mgen.rna
+colnames(y.mgen.rna$samples)
+dim(y.mgen.rna)
+# filter out genes with low expression
+table(rowSums(y.mgen.rna$counts==0)==105)
+keep <- rowSums(cpm(y.mgen.rna)>1)>=3
+y.mgen.rna.filt2 <- y.mgen.rna[keep,,keep.lib.sizes=FALSE]
+dim(y.mgen.rna.filt2)
+# this removes 3262 genes
+# filter based on median log2 cpm
+mgen.rna.log2.cpm <- cpm(y.mgen.rna$counts, log = TRUE)
+median_log2_cpm <- apply(mgen.rna.log2.cpm, 1, median)
+hist(median_log2_cpm)
+expr_cutoff <- -4
+hist(median_log2_cpm)
+abline(v = expr_cutoff, col = "red", lwd = 3)
+sum(median_log2_cpm > expr_cutoff)
+sum(median_log2_cpm <= expr_cutoff)
+# keeps 9284 genes, drops 3581 genes with median expression value less than 0.06 (log2 = -4)
+y.mgen.rna.filt <- y.mgen.rna[median_log2_cpm > expr_cutoff,,keep.lib.sizes=FALSE]
+dim(y.mgen.rna.filt)
+# normalization
+y.mgen.rna.filt.norm <- calcNormFactors(y.mgen.rna.filt, method = "TMM")
+y.mgen.rna.filt.norm$samples$norm.factors
+```
+
+
+
+Subset the data
+
+
+```{r deg-2}
+# developmental
+y.mgen.rna.filt.norm.dev <- y.mgen.rna.filt.norm[,which(y.mgen.rna.filt.norm$samples$caste == ""),keep.lib.sizes=TRUE]
+dim(y.mgen.rna.filt.norm.dev)
+deg.sex <- as.vector(sexex$GeneID)
+deg.stage <- as.vector(stageex$GeneID)
+y.mgen.rna.filt.norm.dev <- y.mgen.rna.filt.norm.dev[which(rownames(y.mgen.rna.filt.norm.dev$counts) %in% deg.sex | rownames(y.mgen.rna.filt.norm.dev$counts) %in% deg.stage),,keep.lib.sizes=TRUE]
+dim(y.mgen.rna.filt.norm.dev)
+# social - all caste samples, socex abdomen or brain genes
+y.mgen.rna.filt.norm.soc <- y.mgen.rna.filt.norm[,which(y.mgen.rna.filt.norm$samples$caste != ""),keep.lib.sizes=TRUE]
+dim(y.mgen.rna.filt.norm.soc)
+deg.soc.abd <- as.vector(socex.abd$GeneID)
+deg.soc.br <- as.vector(socex.br$GeneID)
+y.mgen.rna.filt.norm.soc <- y.mgen.rna.filt.norm.soc[which(rownames(y.mgen.rna.filt.norm.soc$counts) %in% deg.soc.abd | rownames(y.mgen.rna.filt.norm.soc$counts) %in% deg.soc.br),,keep.lib.sizes=TRUE]
+dim(y.mgen.rna.filt.norm.soc)
+# social - abdomen only
+y.mgen.rna.filt.norm.soc.abdO <- y.mgen.rna.filt.norm[,which(y.mgen.rna.filt.norm$samples$caste != "" & y.mgen.rna.filt.norm$samples$tissue == "abdomen"),keep.lib.sizes=TRUE]
+dim(y.mgen.rna.filt.norm.soc.abdO)
+deg.soc.abdO <- as.vector(socex.abd$GeneID)
+y.mgen.rna.filt.norm.soc.abdO <- y.mgen.rna.filt.norm.soc.abdO[which(rownames(y.mgen.rna.filt.norm.soc.abdO$counts) %in% deg.soc.abdO),,keep.lib.sizes=TRUE]
+dim(y.mgen.rna.filt.norm.soc.abdO)
+```
+
+
+
+```{r eset-dev}
+mgen.dev.eset <- ExpressionSet(assayData = y.mgen.rna.filt.norm.dev$counts, phenoData = AnnotatedDataFrame(y.mgen.rna.filt.norm.dev$samples))
+```
+
+
+```{r eset-caste}
+# all caste samples
+mgen.caste.eset <- ExpressionSet(assayData = y.mgen.rna.filt.norm.soc$counts, phenoData = AnnotatedDataFrame(y.mgen.rna.filt.norm.soc$samples))
+# abd samples only
+mgen.caste.abdO.eset <- ExpressionSet(assayData = y.mgen.rna.filt.norm.soc.abdO$counts, phenoData = AnnotatedDataFrame(y.mgen.rna.filt.norm.soc.abdO$samples))
+
+```
+
+#### Run ICA
+
+###### Determine the number of ICs with BIODICA
+Export tables to run through BIODICA in the terminal. Workflow is saved under biodica_apr2018.md in the workflows directory.
+
+The MineICA vignette suggests mean-centering the expression values before ICA computation.
+https://www.bioconductor.org/packages/devel/bioc/vignettes/MineICA/inst/doc/MineICA.pdf 
+
+This is also done by Engreitz et al. 2011 J Biomed Inf https://www.sciencedirect.com/science/article/pii/S1532046410001000?via%3Dihub
+
+and Biton et al. 2014 Cell Reports
+
+Mean-centering involves the subtraction of the variable averages from the data. calculate the average value of each variable and then subtract it from the data. This implies that each column will be transformed in such a way that the resulting variable will have a zero mean.
+
+```{r ica-dev-1}
+exprs(mgen.dev.eset) <- t(apply(exprs(mgen.dev.eset), 1,scale,scale = FALSE))
+colnames(exprs(mgen.dev.eset)) <- sampleNames(mgen.dev.eset)
+# export
+tbl.mgen.dev.eset <- as.data.frame(exprs(mgen.dev.eset))
+tbl.mgen.dev.eset <- cbind(row.names(tbl.mgen.dev.eset), data.frame(tbl.mgen.dev.eset))
+colnames(tbl.mgen.dev.eset)[1] <- "gene"
+write.table(tbl.mgen.dev.eset, file = "mgen_dev_eset.txt", sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+```
+
+```{r ica-caste-1}
+# all caste samples
+exprs(mgen.caste.eset) <- t(apply(exprs(mgen.caste.eset), 1,scale,scale = FALSE))
+colnames(exprs(mgen.caste.eset)) <- sampleNames(mgen.caste.eset)
+# export
+tbl.mgen.caste.eset <- as.data.frame(exprs(mgen.caste.eset))
+tbl.mgen.caste.eset <- cbind(row.names(tbl.mgen.caste.eset), data.frame(tbl.mgen.caste.eset))
+colnames(tbl.mgen.caste.eset)[1] <- "gene"
+write.table(tbl.mgen.caste.eset, file = "mgen_caste_eset.txt", sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+# abd samples only
+exprs(mgen.caste.abdO.eset) <- t(apply(exprs(mgen.caste.abdO.eset), 1,scale,scale = FALSE))
+colnames(exprs(mgen.caste.abdO.eset)) <- sampleNames(mgen.caste.abdO.eset)
+# export
+tbl.mgen.caste.abdO.eset <- as.data.frame(exprs(mgen.caste.abdO.eset))
+tbl.mgen.caste.abdO.eset <- cbind(row.names(tbl.mgen.caste.abdO.eset), data.frame(tbl.mgen.caste.abdO.eset))
+colnames(tbl.mgen.caste.abdO.eset)[1] <- "gene"
+write.table(tbl.mgen.caste.abdO.eset, file = "mgen_caste_abdO_eset.txt", sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+```
+
+###### Now run ICA with the MSTD number of ICs
+
+> An ICA decomposition consists of two matrices, the mixing matrix A containing the sample
+contributions and the source matrix S containing the feature projections. They can be retrieved
+from an IcaSet object using the methods of the same name: A and S. The method S returns matrix S
+at the feature level (e.g, containing projection of the features), while SByGene returns the projection
+values at the gene level.
+
+> By default, for a given component, a witness gene corresponds to an individual having an absolute scaled projection value rger than selCutoff in at most one IC. Its sign of contribution should be the same than the
+majority of the selected contributing genes.
+
+```{r ica-caste-2}
+resFast.caste <- clusterFastICARuns(X=exprs(mgen.caste.eset), nbComp =12, alg.type = "deflation",nbIt = 500, funClus="hclust", metho = "average")
+```
+
+```{r ica-caste-abdO}
+resFast.caste.abdO <- clusterFastICARuns(X=exprs(mgen.caste.abdO.eset), nbComp =5, alg.type = "deflation",nbIt = 500, funClus="hclust", metho = "average")
+```
+
+```{r ica-dev-2}
+resFast.dev <- clusterFastICARuns(X=exprs(mgen.dev.eset), nbComp =47, alg.type = "deflation",nbIt = 500, funClus="hclust", metho = "average")
+```
+
+
+Save for reload later.
+
+```{r save}
+save(resFast.dev, resFast.caste, resFast.caste.abdO, file = "fastICAsets.RDA")
+```
+
+
+###### Build parameter set 
+
+```{r params-dev}
+params.dev <- buildMineICAParams(resPath = "mgenICA_dev/", selCutoff = 3, pvalCutoff = 0.05)
+refSamplesMgen.dev <- character(0)
+resBuild.dev <- buildIcaSet(params = params.dev, 
+                        A = data.frame(resFast.dev$A), 
+                        S = data.frame(resFast.dev$S),
+                        dat = data.frame(exprs(mgen.dev.eset)),
+                        pData = pData(mgen.dev.eset),
+                        refSamples = refSamplesMgen.dev,
+                        alreadyAnnot = TRUE)
+icaSetMgen.dev <- resBuild.dev$icaSet
+params.dev <- resBuild.dev$params
+icaSetMgen.dev
+A(icaSetMgen.dev)
+S(icaSetMgen.dev)
+SByGene(icaSetMgen.dev)
+compNames(icaSetMgen.dev)
+witGenes(icaSetMgen.dev)
+```
+
+
+```{r params-caste}
+params.caste <- buildMineICAParams(resPath = "mgenICA_caste/", selCutoff = 3, pvalCutoff = 0.1)
+refSamplesMgen.caste <- character(0)
+resBuild.caste <- buildIcaSet(params = params.caste, 
+                        A = data.frame(resFast.caste$A), 
+                        S = data.frame(resFast.caste$S),
+                        dat = data.frame(exprs(mgen.caste.eset)),
+                        pData = pData(mgen.caste.eset),
+                        refSamples = refSamplesMgen.caste,
+                        alreadyAnnot = TRUE)
+icaSetMgen.caste <- resBuild.caste$icaSet
+params.caste <- resBuild.caste$params
+icaSetMgen.caste
+A(icaSetMgen.caste)
+S(icaSetMgen.caste)
+SByGene(icaSetMgen.caste)
+compNames(icaSetMgen.caste)
+witGenes(icaSetMgen.caste)
+# abdomen ssamples only
+params.caste.abdO <- buildMineICAParams(resPath = "mgenICA_caste_abdO/", annot2col = c(queen ="#867182",replacement_queen="#F2D3C1",solitary="#D36D3D",worker="#B12C25"), selCutoff = 3, pvalCutoff = 0.05)
+refSamplesMgen.caste.abdO <- character(0)
+resBuild.caste.abdO <- buildIcaSet(params = params.caste.abdO, 
+                        A = data.frame(resFast.caste.abdO$A), 
+                        S = data.frame(resFast.caste.abdO$S),
+                        dat = data.frame(exprs(mgen.caste.abdO.eset)),
+                        pData = pData(mgen.caste.abdO.eset),
+                        refSamples = refSamplesMgen.caste.abdO,
+                        alreadyAnnot = TRUE)
+icaSetMgen.caste.abdO <- resBuild.caste.abdO$icaSet
+params.caste.abdO <- resBuild.caste.abdO$params
+icaSetMgen.caste.abdO
+A(icaSetMgen.caste.abdO)
+S(icaSetMgen.caste.abdO)
+SByGene(icaSetMgen.caste.abdO)
+compNames(icaSetMgen.caste.abdO)
+witGenes(icaSetMgen.caste.abdO)
+```
+
+###### Select the contributing genes
+
+Biton et al. 2014 selected genes associated with a component ("most contributing genes") by thresholding the absolute projections of expression at 3 or 4 standard deviations from the mean as in Teschendorff et al. 2007.
+
+```{r contrib-dev}
+contrib.genes.dev <- selectContrib(icaSetMgen.dev, cutoff = 3, level = "genes")
+# Top 10 contributing genes to ttthe first component
+sort(abs(contrib.genes.dev[[1]]), decreasing = TRUE)[1:10]
+# Top 10 contributing genes to the third component
+sort(abs(contrib.genes.dev[[3]]), decreasing = TRUE)[1:10]
+# extract sample contributions and gene projections of the seecond commmponent
+comp2.dev <- getComp(icaSetMgen.dev,level="genes", ind=2)
+# access the sample contributions
+comp2.dev$contrib[1:5]
+# access the gene projections
+comp2.dev$proj[1:5]
+length(contrib.genes.dev[[1]])
+```
+
+
+
+```{r contrib-caste}
+contrib.genes.caste <- selectContrib(icaSetMgen.caste, cutoff = 3, level = "genes")
+length(contrib.genes.caste)[[1]]
+```
+
+```{r contrib-caste-abd}
+contrib.genes.caste.abdO <- selectContrib(icaSetMgen.caste.abdO, cutoff = 3, level = "genes")
+length(contrib.genes.caste.abdO)[[1]]
+```
+
+Export files of contributing genes
+
+```{r export}
+for(i in 1:47){
+  file <- as.character(paste("contrib_genes_IC_dev",i,".csv",sep=""))
+  write.csv(contrib.genes.dev[[i]], file = file, row.names = TRUE, quote = FALSE)
+}
+for(i in 1:12){
+  file <- as.character(paste("contrib_genes_IC_caste",i,".csv",sep=""))
+  write.csv(contrib.genes.caste[[i]], file = file, row.names = TRUE, quote = FALSE)
+}
+for(i in 1:5){
+  file <- as.character(paste("contrib_genes_IC_caste_abdO",i,".csv",sep=""))
+  write.csv(contrib.genes.caste.abdO[[i]], file = file, row.names = TRUE, quote = FALSE)
+}
+```
+
+
+
+#### Analysis of ICs
+
+Select variables
+
+```{r vars}
+varLabels(icaSetMgen.dev)
+varLabels(icaSetMgen.caste)
+keepVar.dev <- c("sex", "stage", "tissue")
+keepVar.caste <- c("caste", "tissue")
+keepVar.caste.abdO <- c("caste")
+```
+
+###### **Run global analysis**
+
+```{global}
+#runAn(params = params.dev, icaSet = icaSetMgen.dev, writeGenesByComp = FALSE, keepVar = keepVar.dev)
+#runAn(params = params.caste, icaSet = icaSetMgen.caste, writeGenesByComp = FALSE, keepVar = keepVar.caste)
+```
+
+###### **Run analysis by calling  individual functions**
+
+**Write description of contributing genes**
+
+> Each component is typically triggered by a grouup of genes co-expressed on a subset of samples. These genes responsible for the    existence of the component will typically have high projections, we call them the contributing genes.
+
+Look at the contributing genes by identifying genes with a projection value higher than a given threshold. Projections with opposite signs are anti-correlated on the samples distributed at both ends of the component.
+
+```{r cont-genes-dev}
+resW.dev <- writeProjByComp(icaSet = icaSetMgen.dev, params = params.dev,  addNbOcc = TRUE, level = "genes", selCutoffWrite=2.5)
+head(resW.dev$listAnnotComp[[1]])
+head(resW.dev$nbOccInComp)
+genesPath(params.dev)
+```
+
+```{r cont-genes-caste}
+resW.caste <- writeProjByComp(icaSet = icaSetMgen.caste, params = params.caste,  addNbOcc = TRUE, level = "genes", selCutoffWrite=2.5)
+head(resW.caste$listAnnotComp[[10]])
+head(resW.caste$nbOccInComp)
+genesPath(params.caste)
+```
+
+```{r cont-genes-caste-abdO}
+resW.caste.abdO <- writeProjByComp(icaSet = icaSetMgen.caste.abdO, params = params.caste.abdO,  addNbOcc = TRUE, level = "genes", selCutoffWrite=2.5)
+head(resW.caste.abdO$listAnnotComp[[2]])
+head(resW.caste.abdO$nbOccInComp)
+genesPath(params.caste.abdO)
+```
+
+listAnnotComp describes  the contributing genes of each component, as well as the number and indices of the components on which it exceeds the threshold.
+
+** FUnctional Annotation for contributing genes in each IC**
+
+```{r ICgos-dev}
+## set up GO frames and gene sets
+mgen_bp_GOFrame=GOFrame(mgen.BP,organism="Megalopta genalis")
+mgen_cc_GOFrame=GOFrame(mgen.CC,organism="Megalopta genalis")
+mgen_mf_GOFrame=GOFrame(mgen.MF,organism="Megalopta genalis")
+mgen_bp_goAllFrame=GOAllFrame(mgen_bp_GOFrame)
+mgen_cc_goAllFrame=GOAllFrame(mgen_cc_GOFrame)
+mgen_mf_goAllFrame=GOAllFrame(mgen_mf_GOFrame)
+mgen_bp_gsc <- GeneSetCollection(mgen_bp_goAllFrame, setType = GOCollection())
+mgen_cc_gsc <- GeneSetCollection(mgen_cc_goAllFrame, setType = GOCollection())
+mgen_mf_gsc <- GeneSetCollection(mgen_mf_goAllFrame, setType = GOCollection())
+## get universe
+universe.dev <- as.character(rownames(y.mgen.rna.filt.norm.dev$counts))
+## loop
+for(i in 1:47){
+  genes.dev <- as.character(paste("contrib_geneIDs_ICdev_",i,sep=""))
+  file <- as.character(paste("enrich_devIC_",i,"_bp.csv",sep=""))
+  devIC_bp_params <-  GSEAGOHyperGParams(name="mgenBP",
+    geneSetCollection=mgen_bp_gsc,
+    geneIds = genes.dev,
+    universeGeneIds = universe.dev,
+    ontology = "BP",
+    pvalueCutoff = 0.1,
+    conditional = FALSE,
+    testDirection = "over")
+  enrich.devIC_bp <- hyperGTest(mgenMKneg_bp_params)
+  summary(enrich.devIC_bp)
+  enrich.devIC_bp <- as.data.frame(summary(enrich.devIC_bp))
+  enrich.devIC_bp$p_adj <- p.adjust(enrich.devIC_bp$Pvalue, method = "BH")
+  write.csv(enrich.devIC_bp, file = file, quote = FALSE, row.names = FALSE)
+}
+```
+
+**Plot heatmaps of contributing elements**
+
+```{r heatmap-dev}
+resH.dev.dendro <- plot_heatmapsOnSel(icaSet = icaSetMgen.dev, selCutoff = 3,level = "genes",
+                               keepVar = keepVar.dev,
+                               doSamplesDendro = TRUE,
+                               doGenesDendro = TRUE,
+                               file = "heatmap.dendro.dev",
+                               annot2col = annot2col(params.dev))
+resH.dev.order <- plot_heatmapsOnSel(icaSet = icaSetMgen.dev, selCutoff = 3,level = "genes",
+                               keepVar = keepVar.dev,
+                               doSamplesDendro = FALSE,
+                               doGenesDendro = FALSE,
+                               file = "heatmap.order.dev",
+                               annot2col = annot2col(params.dev))
+```
+
+
+```{r heatmap-caste}
+resH.caste.dendro <- plot_heatmapsOnSel(icaSet = icaSetMgen.caste, selCutoff = 3,level = "genes",
+                               keepVar = keepVar.caste,
+                               doSamplesDendro = TRUE,
+                               doGenesDendro = TRUE,
+                               file = "heatmap.dendro.caste",
+                               annot2col = annot2col(params.caste))
+resH.caste.order <- plot_heatmapsOnSel(icaSet = icaSetMgen.caste, selCutoff = 3,level = "genes",
+                               keepVar = keepVar.caste,
+                               doSamplesDendro = FALSE,
+                               doGenesDendro = FALSE,
+                               file = "heatmap.order.caste",
+                               annot2col = annot2col(params.caste))
+```
+
+
+```{r heatmap-caste-abdO}
+resH.caste.abdO.dendro <- plot_heatmapsOnSel(icaSet = icaSetMgen.caste.abdO, selCutoff = 3,level = "genes",
+                               keepVar = keepVar.caste.abdO,
+                               doSamplesDendro = TRUE,
+                               doGenesDendro = TRUE,
+                               file = "heatmap.dendro.caste.abdO",
+                               annot2col = annot2col(params.caste.abdO))
+resH.caste.abdO.order <- plot_heatmapsOnSel(icaSet = icaSetMgen.caste.abdO, selCutoff = 3,level = "genes",
+                               keepVar = keepVar.caste.abdO,
+                               doSamplesDendro = FALSE,
+                               doGenesDendro = FALSE,
+                               file = "heatmap.order.caste.abdO",
+                               annot2col = annot2col(params.caste.abdO))
+```
+
+**Association with sample variables**
+
+```{r samples-dev}
+resQual.dev <- qualVarAnalysis(params = params.dev, icaSet = icaSetMgen.dev,
+                               keepVar = keepVar.dev,
+                               adjustBy = "variable",
+                               typePlot = "boxplot",
+                               path = "qualVarAnalysis_dev/",
+                               filename = "qualVar_dev")
+```
+
+
+
+```{r samples-caste}
+resQual.caste <- qualVarAnalysis(params = params.caste, icaSet = icaSetMgen.caste,
+                               keepVar = keepVar.caste,
+                               adjustBy = "variable",
+                               typePlot = "boxplot",
+                               addPoints = TRUE, 
+                               colours =
+c(queen="#75B1A9",replacement_queen="#D9B44A",solitary="#4F6457",worker="#ACD0C0"),
+                               path = "qualVarAnalysis_caste/",
+                               filename = "qualVar_caste")
+```
+
+
+```{r samples-caste-abdO}
+resQual.caste.abdO <- qualVarAnalysis(params = params.caste.abdO, icaSet = icaSetMgen.caste.abdO,
+                               keepVar = keepVar.caste.abdO,
+                               adjustBy = "variable",
+                               typePlot = "boxplot",
+                               addPoints = TRUE, 
+                               colours =
+c(queen="#75B1A9",replacement_queen="#D9B44A",solitary="#4F6457",worker="#ACD0C0"),
+                               path = "qualVarAnalysis_caste_abdO/",
+                               filename = "qualVar_caste_abdO")
+```
+
+
+### Compare ICAsets
+
+First development and all caste samples (abdomen & brain).
+
+```{r graph}
+resGraph.pear.z0 <- runCompareIcaSets(icaSet = list(icaSetMgen.caste, icaSetMgen.dev),
+                             labAn = c("caste", "development"),
+                            type.corr = "pearson",
+                              level = "genes",
+                              cutoff_zval = 0,
+                              fileNodeDescr = "nodeDescrICAComp_pearson_z0.txt",
+                              fileDataGraph = "dataICACompGraph_pearson_z0.txt",
+                              tkplot = TRUE)
+length(resGraph.pear.z0$dataGraph$reciprocal)
+table(resGraph.pear.z0$dataGraph$reciprocal)
+table(resGraph.pear.z0$dataGraph$cor > 0.25)
+```
+
+Now with only caste abdomen samples
+
+```{r graph-2}
+resGraph2.pear.z0 <- runCompareIcaSets(icaSet = list(icaSetMgen.caste.abdO, icaSetMgen.dev),
+                              labAn = c("caste", "development"),
+                              type.corr = "pearson",
+                              level = "genes",
+                              cutoff_zval = 0,
+                              fileNodeDescr = "nodeDescrICAComp2_pearson_z0.txt",
+                              fileDataGraph = "dataICACompGraph2_pearson_z0.txt",
+                              tkplot = TRUE)
+length(resGraph2.pear.z0$dataGraph$reciprocal)
+table(resGraph2.pear.z0$dataGraph$reciprocal)
+table(resGraph2.pear.z0$dataGraph$cor > 0.25)
+```
+
+
+
+> tkplot, using the “fruchterman.reingold” layout which attends to attribute the length of the edge according to one of its attribute, here the absolute correlation coefficient between the two components it links...The edge thickness is also attributed according to the absolute correlation value (the higher the absolute correlation value is, the thicker the edge thickness is). Highly reproducible components appear in the graph as a subset of n interconnected nodes of different colors (quasi-cliques). A way to highlight these quasi-cliques is obtained by coloring in black only edges linking reciprocal node pairs (a node pair is said to be reciprocal if there are edges between them in both directions). Non-reciprocal edges appear in grey. It allows to highlight the components with a high level of reproducibility.
+
+Compare genes of correlated components
+
+```{r compare-graph1}
+inter.pear.z0.C2D13_6 <- compareGenes(keepCompByIcaSet = c(2,13,6),
+                                   icaSets =
+                                     list(icaSetMgen.caste,icaSetMgen.dev,icaSetMgen.dev),
+                                   lab=c("caste", "development", "development"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+inter.pear.z0.C7D38_2 <- compareGenes(keepCompByIcaSet = c(7,38,2),
+                                   icaSets = 
+                                     list(icaSetMgen.caste,icaSetMgen.dev, icaSetMgen.dev),
+                                   lab=c("caste", "development", "development"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+inter.pear.z0.C1D37_12 <- compareGenes(keepCompByIcaSet = c(1,37, 12),
+                                   icaSets = 
+                                     list(icaSetMgen.caste,icaSetMgen.dev, icaSetMgen.dev),
+                                   lab=c("caste", "development", "development"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+inter.pear.z0.C5D14 <- compareGenes(keepCompByIcaSet = c(5,14),
+                                   icaSets = list(icaSetMgen.caste,icaSetMgen.dev),
+                                   lab=c("caste", "development"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+inter.pear.z0.C9D20_34_1 <- compareGenes(keepCompByIcaSet = c(9,20,34,1),
+                                   icaSets = list(icaSetMgen.caste,icaSetMgen.dev,icaSetMgen.dev,icaSetMgen.dev),
+                                   lab=c("caste", "development","development","development"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+inter.pear.z0.C11D16_29 <- compareGenes(keepCompByIcaSet = c(11,16,29),
+                                   icaSets =
+                                     list(icaSetMgen.caste,icaSetMgen.dev,icaSetMgen.dev),
+                                   lab=c("caste", "development","development"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+inter.pear.z0.C4D36 <- compareGenes(keepCompByIcaSet = c(4,36),
+                                   icaSets = list(icaSetMgen.caste,icaSetMgen.dev),
+                                   lab=c("caste", "development"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+inter.pear.z0.C8D47 <- compareGenes(keepCompByIcaSet = c(8,47),
+                                   icaSets = list(icaSetMgen.caste,icaSetMgen.dev),
+                                   lab=c("caste", "development"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+inter.pear.z0.C10D45 <- compareGenes(keepCompByIcaSet = c(10,45),
+                                   icaSets = list(icaSetMgen.caste,icaSetMgen.dev),
+                                   lab=c("caste", "development"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+```
+
+Now just abdomen caste sest
+
+```{r compare-graph2}
+inter.pear.z0.C1D47 <- compareGenes(keepCompByIcaSet = c(1,47),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev),
+                                   lab=c("caste_1", "development_47"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+write.csv(inter.pear.z0.C1D47, file = "intersect_pear_z0_C1D47.csv", row.names = TRUE, quote = FALSE)
+inter.pear.z0.C4D16 <- compareGenes(keepCompByIcaSet = c(4,16),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev),
+                                   lab=c("caste_4", "development_16"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+write.csv(inter.pear.z0.C4D16, file = "intersect_pear_z0_C4D16.csv", row.names = TRUE, quote = FALSE)
+inter.pear.z0.C2D14 <- compareGenes(keepCompByIcaSet = c(2,14),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev),
+                                   lab=c("caste_2", "development_14"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+write.csv(inter.pear.z0.C2D14, file = "intersect_pear_z0_C2D14.csv", row.names = TRUE, quote = FALSE)
+inter.pear.z0.C3D9 <- compareGenes(keepCompByIcaSet = c(3,9),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev),
+                                   lab=c("caste_3", "development_9"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+write.csv(inter.pear.z0.C3D9, file = "intersect_pear_z0_C3D9.csv", row.names = TRUE, quote = FALSE)
+inter.pear.z0.C5D20 <- compareGenes(keepCompByIcaSet = c(5,20),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev),
+                                   lab=c("caste_5", "development_20"),
+                                   cutoff = 3,
+                                   type = "intersection",
+                                   annotate = FALSE)
+write.csv(inter.pear.z0.C5D20, file = "intersect_pear_z0_C5D20.csv", row.names = TRUE, quote = FALSE)
+```
+
+
+Now union for functional enrichment
+
+```{r compare-graph3}
+# all correlations > 0.25
+union.pear.z0.C1D47_33_28 <- compareGenes(keepCompByIcaSet = c(1,47,33,28),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev,icaSetMgen.dev,icaSetMgen.dev),
+                                   lab=c("caste_abd_1", "development_47", "development_33", "development_28"),
+                                   cutoff = 3,
+                                   type = "union",
+                                   annotate = FALSE)
+write.csv(union.pear.z0.C1D47_33_28, file = "union_pear_z0_C1D47_33_28.csv", row.names = TRUE, quote = FALSE)
+union.pear.z0.C2D14_3_21 <- compareGenes(keepCompByIcaSet = c(2,14,3,21),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev,icaSetMgen.dev,icaSetMgen.dev),
+                                   lab=c("caste_abd_2", "development_14", "development_3", "development_21"),
+                                   cutoff = 3,
+                                   type = "union",
+                                   annotate = FALSE)
+write.csv(union.pear.z0.C2D14_3_21, file = "union_pear_z0_C2D14_3_21.csv", row.names = TRUE, quote = FALSE)
+union.pear.z0.C5D20_34_13_1_15 <- compareGenes(keepCompByIcaSet = c(5,20,34,13,1,15),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev,icaSetMgen.dev,icaSetMgen.dev,icaSetMgen.dev,icaSetMgen.dev),
+                                   lab=c("caste_abd_5", "development_20", "development_34", "development_1", "development_15"),
+                                   cutoff = 3,
+                                   type = "union",
+                                   annotate = FALSE)
+write.csv(union.pear.z0.C5D20_34_13_1_15, file = "union_pear_z0_C5D20_34_13_1_15.csv", row.names = TRUE, quote = FALSE)
+union.pear.z0.C3D9_29_6 <- compareGenes(keepCompByIcaSet = c(3,9,29,6),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev,icaSetMgen.dev,icaSetMgen.dev),
+                                   lab=c("caste_abd_3", "development_9", "development_29", "development_6"),
+                                   cutoff = 3,
+                                   type = "union",
+                                   annotate = FALSE)
+write.csv(union.pear.z0.C3D9_29_6, file = "union_pear_z0_C3D39_29_6.csv", row.names = TRUE, quote = FALSE)
+# reciprocal correlations only
+union.z0.C1D47 <- compareGenes(keepCompByIcaSet = c(1,47),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev),
+                                   lab=c("caste_abd_1", "development_47"),
+                                   cutoff = 3,
+                                   type = "union",
+                                   annotate = FALSE)
+write.csv(union.z0.C1D47, file = "union_z0_C1D47.csv", row.names = TRUE, quote = FALSE)
+union.z0.C4D16 <- compareGenes(keepCompByIcaSet = c(4,16),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev),
+                                   lab=c("caste_abd_4", "development_16"),
+                                   cutoff = 3,
+                                   type = "union",
+                                   annotate = FALSE)
+write.csv(union.z0.C4D16, file = "union_z0_C4D16.csv", row.names = TRUE, quote = FALSE)
+union.pear.z0.C2D14 <- compareGenes(keepCompByIcaSet = c(2,14),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev),
+                                   lab=c("caste_abd_2", "development_14"),
+                                   cutoff = 3,
+                                   type = "union",
+                                   annotate = FALSE)
+write.csv(union.pear.z0.C2D14, file = "union_pear_z0_C2D14.csv", row.names = TRUE, quote = FALSE)
+union.pear.z0.C5D20 <- compareGenes(keepCompByIcaSet = c(5,20),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev),
+                                   lab=c("caste_abd_5", "development_20"),
+                                   cutoff = 3,
+                                   type = "union",
+                                   annotate = FALSE)
+write.csv(union.pear.z0.C5D20, file = "union_pear_z0_C5D20.csv", row.names = TRUE, quote = FALSE)
+union.pear.z0.C3D9 <- compareGenes(keepCompByIcaSet = c(3,9),
+                                   icaSets=
+                                   list(icaSetMgen.caste.abdO,icaSetMgen.dev),
+                                   lab=c("caste_abd_3", "development_9"),
+                                   cutoff = 3,
+                                   type = "union",
+                                   annotate = FALSE)
+write.csv(union.pear.z0.C3D9, file = "union_pear_z0_C3D9.csv", row.names = TRUE, quote = FALSE)
+```
+
+Export universe and gene lists for functional enrichment analysis
+
+```{r export-1}
+universe_caste <- as.character(rownames(y.mgen.rna.filt.norm.soc$counts))
+universe_casteAbd <- as.character(rownames(y.mgen.rna.filt.norm.soc.abd$counts))
+universe_dev <- as.character(rownames(y.mgen.rna.filt.norm.dev$counts))
+universe_intersect_casteAbd_dev <- as.character(intersect(universe_casteAbd,universe_dev))
+universe_union_casteAbd_dev <- as.character(union(universe_casteAbd,universe_dev))
+write.table(universe_caste, file = "universe_caste.txt", quote = FALSE)
+write.table(universe_casteAbd, file = "universe_casteAbd.txt", quote = FALSE)
+write.table(universe_dev, file = "universe_dev.txt", quote = FALSE)
+write.table(universe_intersect_casteAbd_dev, file = "universe_intersect_casteAbd_dev.txt", quote = FALSE)
+write.table(universe_union_casteAbd_dev, file = "universe_union_casteAbd_dev.txt", quote = FALSE)
+```
+### Whole dataset
+
+
+
+```{r whole-deg-1}
+y.mgen.rna <- DGEList(counts = mgen.rna.raw_counts, samples = mgen.rna.targets, group = mgen.rna.targets$tau_tissue)
+y.mgen.rna
+colnames(y.mgen.rna$samples)
+dim(y.mgen.rna)
+# filter out genes with low expression
+table(rowSums(y.mgen.rna$counts==0)==105)
+keep <- rowSums(cpm(y.mgen.rna)>1)>=3
+y.mgen.rna.filt2 <- y.mgen.rna[keep,,keep.lib.sizes=FALSE]
+dim(y.mgen.rna.filt2)
+# this removes 3262 genes
+# filter based on median log2 cpm
+mgen.rna.log2.cpm <- cpm(y.mgen.rna$counts, log = TRUE)
+median_log2_cpm <- apply(mgen.rna.log2.cpm, 1, median)
+hist(median_log2_cpm)
+expr_cutoff <- -4
+hist(median_log2_cpm)
+abline(v = expr_cutoff, col = "red", lwd = 3)
+sum(median_log2_cpm > expr_cutoff)
+sum(median_log2_cpm <= expr_cutoff)
+# keeps 9284 genes, drops 3581 genes with median expression value less than 0.06 (log2 = -4)
+y.mgen.rna.filt <- y.mgen.rna[median_log2_cpm > expr_cutoff,,keep.lib.sizes=FALSE]
+dim(y.mgen.rna.filt)
+# normalization
+y.mgen.rna.filt.norm <- calcNormFactors(y.mgen.rna.filt, method = "TMM")
+y.mgen.rna.filt.norm$samples$norm.factors
+```
+
+
+```{r eset}
+mgen.eset <- ExpressionSet(assayData = y.mgen.rna.filt.norm$counts, phenoData = AnnotatedDataFrame(y.mgen.rna.filt.norm$samples))
+```
+
+
+
+```{r ica}
+exprs(mgen.eset) <- t(apply(exprs(mgen.eset), 1,scale,scale = FALSE))
+colnames(exprs(mgen.eset)) <- sampleNames(mgen.eset)
+# export
+write.table(exprs(mgen.eset), file = "mgen_eset.txt", sep = "\t", row.names = TRUE, col.names = TRUE, quote = FALSE)
+```
+
+###### Run ICA 
+
+**Determining the number of components**
+
+Do this in BIODICA!
+
+```{r ica-3}
+#resJade <- runICA(X = exprs(mgen.eset), nbComp = 10, method = "JADE", maxit = 99999)
+#resFast <- clusterFastICARuns(X=exprs(mgen.eset), nbComp =10, alg.type = "deflation",nbIt = 500, funClus="hclust", metho = "average")
+```
+
+> The returned estimates are ranked according to their Iq indices which measure the compactness of
+the clusters and are defined as the differences between the intra-cluster similarity and the extracluster
+similiarity Johan Himberg et al. [2004].
+
+###### Build parameter set
+
+
+```{r params}
+params <- buildMineICAParams(resPath = "mgenICA/", selCutoff = 3, pvalCutoff = 0.05)
+refSamplesMgen <- character(0)
+resBuild <- buildIcaSet(params = params, 
+                        A = data.frame(resFast$A), 
+                        S = data.frame(resFast$S),
+                        dat = data.frame(exprs(mgen.eset)),
+                        pData = pData(mgen.eset),
+                        refSamples = refSamplesMgen,
+                        alreadyAnnot = TRUE)
+icaSetMgen <- resBuild$icaSet
+params <- resBuild$params
+icaSetMgen
+A(icaSetMgen)
+S(icaSetMgen)
+SByGene(icaSetMgen)
+compNames(icaSetMgen)
+witGenes(icaSetMgen)
+```
+
+
+
+###### Select the contributing genes
+
+
+```{r contrib}
+contrib.genes <- selectContrib(icaSetMgen, cutoff = 3, level = "genes")
+# Top 10 contributing genes to ttthe first cccccccccomponent
+sort(abs(contrib.genes[[1]]), decreasing = TRUE)[1:10]
+# Top 10 contributing genes to the third component
+sort(abs(contrib.genes[[3]]), decreasing = TRUE)[1:10]
+# extract sample contributions and gene projections of the seecond commmponent
+comp2 <- getComp(icaSetMgen,level="genes", ind=2)
+# access the sample contributions
+comp2$contrib[1:5]
+# access the gene projections
+comp2$proj[1:5]
+length(contrib.genes[[1]])
+length(contrib.genes[[2]])
+length(contrib.genes[[3]])
+length(contrib.genes[[4]])
+length(contrib.genes[[5]])
+```
+
+
+###### Analysis of ICs
+
+###### **Run global analysis**
+
+```{r global}
+varLabels(icaSetMgen)
+keepVar <- c("sex", "stage", "tissue", "caste")
+runAn(params = params, icaSet = icaSetMgen, writeGenesByComp = FALSE, keepVar = keepVar)
+```
+
+> The sub-directories automatically created by the function runAn are the following:
+ProjByComp/: contains the annotations of the features or genes, one file per component;
+varAnalysisOnA/: contains two directories: ’qual/’ and ’quant/’ which respectively contain the
+results of the association between components and qualitative and/or quantitative variables;
+Heatmaps/: contains the heatmaps (one pdf file per component) of the contributing genes by
+component;
+varOnSampleHist/: contains the histograms of the sample contributions superimposed with the
+histograms of the groups of samples defined by the variables of interest (e.g tumor grade).
+
+
+## Save project
+
+ 
+```{r save-2}
+save.image("halictid_genome_analysis_RQ6.RData")
+```
