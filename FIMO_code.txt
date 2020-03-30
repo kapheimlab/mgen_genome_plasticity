@@ -1,0 +1,273 @@
+# The following scripts take genomic regions of interest
+# (regions surrounding SNPs with Fst>0.2 within differentiated
+# windows between solitary and social M. genalis; all SNPs are
+# either upstream or within introns of genes), scans those
+# regions for TF motifs using FIMO, and filters results for
+# alleles that are predicted to strongly affect TF binding
+
+# Using the following software, with versions specified:
+# SAMtools 1.7
+# Perl 5.24.1
+# MEME 4.12.0
+
+# Ran on March 16, 2018, biocluster2 at UIUC
+
+module load SAMtools/1.7-IGB-gcc-4.9.4
+module load Perl/5.24.1-IGB-gcc-4.9.4
+module load MEME/4.12.0-IGB-gcc-4.9.4-Perl-5.24.1-Python-2.7.13
+
+# index genome file
+samtools faidx /path/to/Mgen.soapdenovo.fa
+
+# extract regions of interest, 201 bp regions
+# with SNP in center, 100 bp flanks on each side
+# save as "0.2_intron_upstream_regions.txt"
+
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+# extract regions from file "region_names.txt"
+open(POSITIONS,"regions_names.txt");
+open(OUTPUT, '>', '/path/to/0.2_intron_upstream_regions.txt');
+while(<POSITIONS>){
+    chomp;
+    open(SAMTOOLS,"samtools faidx /path/to/Mgen.soapdenovo.fa $_ |");
+    while(my $line = <SAMTOOLS>){
+        print OUTPUT $line;
+    }
+    close(SAMTOOLS);
+}
+close(POSITIONS);
+
+exit
+
+# 201 bp regions (SNP, 100 bp flanking either side) 
+# are now in 0.2_intron_upstream_regions.txt
+
+# get alleles for each SNP from the vcf, 
+# filtered_excl_snps_r4_v2.vcf.recode.vcf
+
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+# search scaffold and position in VCF, save columns 4 and 5 which are the alleles
+
+# extract allele info for each SNP
+open(SNPs,"SNPs.txt");
+open(OUTPUT, '>', '/path/to/SNPs_alleles.txt');
+while(<SNPs>){
+    chomp;
+    my ($scaffold,$position) = split(/_/);
+    my $line = `grep $scaffold /path/to/filtered_excl_snps_r4_v2.vcf.recode.vcf | grep $position | cut -f4,5`;
+    print OUTPUT "$scaffold\t$position\t$line";
+}
+close(SNPs);
+
+exit
+
+# SNP allele information is now in SNPs_alleles.txt
+
+# Now need to use the allele info in SNPs_alleles.txt to generate both versions of each SNP
+# in the 0.2_intron_upstream_regions.txt, now called 0.2_intron_upstream_regions_BOTH_alleles.txt
+
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+# This file contains SNP info, reference and alternative SNP
+open(ALLELES,"SNPs_alleles.txt");
+
+# This file contains regions with reference allele
+open(REGIONS,"0.2_intron_upstream_regions.txt");
+
+# Output file
+open(OUT, '>', '/path/to/0.2_intron_upstream_regions_BOTH_alleles.txt');
+
+# For each sequence in REGIONS, copy sequence and switch out SNP
+# at location 101 for alternative SNP, then write both reference
+# and alternative to output file
+
+# First make hash of SNP names and alternative alleles
+
+my %snp_hash = ();
+
+while(my $line = <ALLELES>) {
+    chomp $line;
+    my @tokens = split('\t',$line);
+    my $SNP = join(":",$tokens[0],$tokens[1]);
+    my $alt_allele = $tokens[3];
+    $snp_hash{$SNP} = $alt_allele;
+}
+close(ALLELES);
+
+# Then make hash of SNP names and sequences
+
+my %seq_hash = ();
+my $SNP;
+
+while(my $line = <REGIONS>) {
+    if ($line =~ /^>/) {
+        chomp $line;
+        my ($scaffold,$position) = split(":",$line);
+        $scaffold = substr $scaffold, 1;
+        my @tokens = split('-',$position);
+        my $snp_position = $tokens[0] + 100;
+        # this $SNP is my key
+        $SNP = join(":",$scaffold,$snp_position);
+        #remove the > at the beginning
+        $seq_hash{$SNP} = "";
+    }
+    else {
+        chomp $line;
+        $seq_hash{$SNP} = join("",$seq_hash{$SNP},$line);
+    }
+}
+close(REGIONS);
+
+# Now go through each REGION and print out both versions of the SNP within the region
+# All regions are keys to the %seq_hash, so just iterate through those
+
+my @SNPs = keys %seq_hash;
+for my $SNP (@SNPs) {
+    my $new_head1 = join("_",$SNP,"a1");
+    my $seq1 = $seq_hash{$SNP};
+    print OUT ">$new_head1\n$seq1\n";
+
+    my $new_head2 = join("_",$SNP,"a2");
+    #get allele to replace reference SNP
+    my $nucl = $snp_hash{$SNP};
+    my $first100 = (substr $seq1, 0, 100);
+    my $last100 = (substr $seq1, 101, 100);
+    my $seq2 = join("",$first100,$nucl,$last100);
+    print OUT ">$new_head2\n$seq2\n";
+}
+
+close(OUT);
+
+exit
+
+# Make background file for Mgen genome for FIMO
+
+fasta-get-markov /path/to/Mgen.soapdenovo.fa Mgen.soapdenovo.bg
+
+# Contents of Mgen.soapdenovo.bg :
+## 0-order Markov frequencies from file /path/to/Mgen.soapdenovo.fa
+# seqs: 75574    min: 100    max: 10196927    avg: 5507.0    sum: 416187957    alph: DNA
+# order 0
+#A 2.988e-01
+#C 2.012e-01
+#G 2.012e-01
+#T 2.988e-01
+
+# Run FIMO on regions, using background file
+# and position weight matrices from Kapheim et al. 2015,
+# DOI: 10.1126/science.aaa4788, converted to MEME format
+
+fimo --bgfile Mgen.soapdenovo.bg --o FIMO_15Mar18_output --no-qvalue --thresh 0.01 mgen_TFposition_weight_matrix.txt 0.2_intron_upstream_regions_BOTH_alleles.txt
+
+# Filter for just hits with pval < 0.0001
+awk '$8 <= 0.0001 {print $0}' fimo.txt > fimo_pval_0.0001.txt
+
+# Filter for just hits including SNP (at position 101)
+awk '($4 <= 101) && ($5 >= 101 )' fimo_pval_0.0001.txt > fimo_pval_0.0001_incl_SNP.txt
+
+# Now filter for just those where the SNP makes a difference
+
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+# This file contains FIMO hits with p<0.0001 and including SNPs
+open(FIMO,"/path/to/fimo_pval_0.0001_incl_SNP.txt");
+
+# Output file
+open(OUT, '>', '/path/to/SNPs_with_effect_on_TFs_pval0.0001.txt');
+
+# Header of FIMO file
+# motif_id      motif_alt_id    sequence_name   start   stop    strand  score   p-value q-value matched_sequence
+
+# Make hash with each TF, SNP, and allele as keys, FIMO scores as values for all matches with pval < 0.0001
+
+my %score_hash;
+my %pval_hash;
+
+while(my $line = <FIMO>) {
+    chomp $line;
+    my @tokens = split('\t',$line);
+    my $TF = $tokens[0];
+    my ($SNP, $allele) = split("_",$tokens[2]);
+    my $region = join(":",$SNP,$tokens[3],$tokens[4]);
+    # for each combination of TF, SNP/region, and allele, save score
+    $score_hash{$TF}{$region}{$allele} = $tokens[6];
+    $pval_hash{$TF}{$region}{$allele} = $tokens[7];
+}
+close(FIMO);
+
+# Print header line
+print OUT "TF\tSNP\tmatch_position\ta1_pval\ta1_score\ta2_pval\ta2_score\t|a2 score - a1 score|\t(a2 score/a1 score)\n";
+
+# Now, for each hit, extract score for other allele
+foreach my $TF (sort keys %score_hash) {
+    foreach my $region (keys %{ $score_hash{$TF} }) {
+        if (exists $score_hash{$TF}{$region}{"a1"}) {
+            if (exists $score_hash{$TF}{$region}{"a2"}) {
+                # TF hits SNP with both variants with p<0.0001, so just output results
+                my @tokens = split(":",$region);
+                my $SNP = join(":",$tokens[0],$tokens[1]);
+                my $positions = join("-",$tokens[2],$tokens[3]);
+                my $a1_score = $score_hash{$TF}{$region}{"a1"};
+                my $a2_score = $score_hash{$TF}{$region}{"a2"};
+                my $score_diff = abs($a2_score - $a1_score);
+                my $score_ratio = ($a2_score / $a1_score);
+                my $a1_pval = $pval_hash{$TF}{$region}{"a1"};
+                my $a2_pval = $pval_hash{$TF}{$region}{"a2"};
+                print OUT "$TF\t$SNP\t$positions\t$a1_pval\t$a1_score\t$a2_pval\t$a2_score\t$score_diff\t$score_ratio\n";
+            }
+            # TF hits SNP for a1 but not a2
+            else {
+                # going to grep the a2 score and pval from the file with all results, fimo_incl_SNP.txt (not p-value filtered)
+                my @tokens = split(":",$region);
+                my $SNP = join(":",$tokens[0],$tokens[1]);
+                my $positions = join("-",$tokens[2],$tokens[3]);
+                my $allele = join("_",$SNP,"a2");
+                my $search = join("\t",$allele,$tokens[2],$tokens[3]);
+                my $a2_info = `grep $TF /path/to/fimo_incl_SNP.txt | grep "$search"`;
+                my @tokens2 = split("\t",$a2_info);
+                my ($a2_score, $a2_pval) = ($tokens2[6],$tokens2[7]);
+                my $a1_score = $score_hash{$TF}{$region}{"a1"};
+                my $a1_pval = $pval_hash{$TF}{$region}{"a1"};
+                my $score_diff = abs($a2_score - $a1_score);
+                my $score_ratio = ($a2_score / $a1_score);
+                print OUT "$TF\t$SNP\t$positions\t$a1_pval\t$a1_score\t$a2_pval\t$a2_score\t$score_diff\t$score_ratio\n";
+            }
+        }
+        else {
+            if (exists $score_hash{$TF}{$region}{"a2"}) {
+                # TF hits SNP for a2 but not a1
+                 # going to grep the a1 score and pval from the file with all results, fimo_incl_SNP.txt (not p-value filtered)
+                my @tokens = split(":",$region);
+                my $SNP = join(":",$tokens[0],$tokens[1]);
+                my $positions = join("-",$tokens[2],$tokens[3]);
+                my $allele = join("_",$SNP,"a1");
+                my $search = join("\t",$allele,$tokens[2],$tokens[3]);
+                my $a1_info = `grep $TF /path/to/fimo_incl_SNP.txt | grep "$search"`;
+                my @tokens2 = split("\t",$a1_info);
+                my ($a1_score, $a1_pval) = ($tokens2[6],$tokens2[7]);
+                my $a2_score = $score_hash{$TF}{$region}{"a2"};
+                my $a2_pval = $pval_hash{$TF}{$region}{"a2"};
+                my $score_diff = abs($a2_score - $a1_score);
+                my $score_ratio = ($a2_score / $a1_score);
+                print OUT "$TF\t$SNP\t$positions\t$a1_pval\t$a1_score\t$a2_pval\t$a2_score\t$score_diff\t$score_ratio\n";
+            }
+        }
+    }
+}
+
+close(OUT);
+exit

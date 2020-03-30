@@ -1,0 +1,50 @@
+# Workflow and Supplementary Material for testing for genetic differentiation between social and solitary M. genalis
+
+
+##SNP Functional Classification
+I used SNPEff to calssify mutations putative functional roles. This is for a previous version of SNPEff, when it output text files in addition to adding annotation lines to the VCF file. 
+
+#Running SNPEff
+1. Make snpeff directory (update .config file)
+<pre><code>
+mkdir /snpEff2/data/nmel
+mv genes.gff
+cp Nmel.fa /snpEff2/data/genomes/ 
+</code></pre>
+
+2. Make database
+<pre><code>
+java -jar /usr/local/lib/snpEff2/snpEff.jar build -gff3 -v nmel
+</code></pre>
+
+3. Call functional categories 
+<pre><code>
+java -jar /usr/local/lib/snpEff2/snpEff.jar nmel -o txt nmel.vcf -no-downstream -no-upstream  > nmel.snpeff.eff
+
+sed '/SYNONYMOUS/ !d' nmel.snpeff.eff > exons.eff
+	#fixed ?/?
+sed -i '/?/ d' exons.eff	
+sed '/WARNING/ !d' exons.eff > warnexons.eff
+sed '/WARNING/ d' exons.eff > exons1.eff
+</code></pre>
+	
+
+##FST 
+For outlier analysis, I used [pFst and wcFst](https://github.com/jewmanchue/vcflib/wiki/Association-testing-with-GPAT) straight from final VCF file. This estimates significance of pairwise Fst in a Bayesian manor (Li 2011; Kim et al. 2010). The script runs pFST and wcFST between the two solitary and social conditions. Of massive importance, this script is 0 based, first sample is "0"!
+
+<pre><code>
+raw_perm_fst.r
+</code></pre>
+
+Li H. A statistical framework for SNP calling, mutation discovery, association mapping and population genetical parameter estimation from sequencing data. Bioinformatics. 2011; (27):2987-2993. doi: 10.1093/bioinformatics/btr509.
+Kim SY, Li YR, Guo YR, Li RQ, Holmkvist J, et al. Design of association studies with pooled or un-pooled next-generation sequencing data. Genetic Epidemiology. 2010; (34):479-491. doi: 10.1002/gepi.20501.
+
+	
+	
+	
+	
+	
+	
+
+
+
